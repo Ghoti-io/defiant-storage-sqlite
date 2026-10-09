@@ -1,0 +1,26 @@
+# Valgrind suppressions for the Ghoti.io Model test suite.
+#
+# Add to this file only for allocations that are demonstrably not ours, and
+# name the frames narrowly enough that a leak of our own cannot match. Every
+# entry should say what it is, why it cannot be fixed here, and how it was
+# shown to be narrow.
+
+# glibc keeps one allocation for the LOCPATH search list, built in
+# __argz_add_sep while newlocale() resolves a locale name. freelocale() does
+# not release it, and the numeric-locale tests cannot avoid LOCPATH: this
+# machine ships no comma-decimal locale, so the test generates one with
+# localedef and LOCPATH is the only way to reach it.
+#
+# The three named frames are glibc's locale-path parsing, which nothing in
+# this library calls. Shown to be narrow rather than assumed: with a
+# deliberate 1234-byte leak planted in the test, valgrind still reported it
+# while this entry suppressed the glibc one. The same check was done for
+# LeakSanitizer, whose equivalent suppression lives in test_locale.cpp.
+{
+   glibc-newlocale-locpath-argz
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:realloc
+   fun:argz_add_sep
+   fun:newlocale
+}
