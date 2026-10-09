@@ -112,6 +112,7 @@ TEST(Tenants, EachReadSeesOnlyItsTenant) {
   const uint8_t a[] = {1, 2};
   const uint8_t b[] = {3};
   ASSERT_EQ(GDEFSTOR_OK, put_blob(store, "A", "k", a, sizeof a));
+  ASSERT_EQ(GDEFSTOR_OK, put_blob(store, "A", "only-a", a, sizeof a));
   ASSERT_EQ(GDEFSTOR_OK, put_blob(store, "B", "k", b, sizeof b));
   uint8_t * bytes = NULL;
   size_t len = 0;
