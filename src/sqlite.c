@@ -46,7 +46,15 @@ static int gdefssqlite_plant_drop_row = 0; /* plant:migration */
 typedef struct SqlBag {
   const GDEFSSQLITE_Allocator * alloc;
   char * dir;
+  sqlite3 * txn_db;
+  char * txn_tenant;
+  size_t txn_tenant_len;
+  int puts_in_txn;
 } SqlBag;
+
+/* When positive, the Nth put inside a transaction returns an I/O error
+ * before it writes. Tests set this. It is not a planted defect. */
+int gdefssqlite_plant_fail_put = 0;
 
 static GDEFSTOR_Result from_sqlite(int rc) {
   switch (rc) {
@@ -310,11 +318,24 @@ static GDEFSTOR_Result open_tenant(SqlBag * bag, const char * tenant,
   return GDEFSTOR_OK;
 }
 
+static void clear_txn(SqlBag * bag) {
+  if (bag->txn_db != NULL) {
+    sqlite3_exec(bag->txn_db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(bag->txn_db);
+    bag->txn_db = NULL;
+  }
+  gcu_allocator_free(bag->alloc, bag->txn_tenant);
+  bag->txn_tenant = NULL;
+  bag->txn_tenant_len = 0;
+  bag->puts_in_txn = 0;
+}
+
 static void bag_destroy(void * ctx) {
   SqlBag * bag = (SqlBag *)ctx;
   if (bag == NULL) {
     return;
   }
+  clear_txn(bag);
   gcu_allocator_free(bag->alloc, bag->dir);
   gcu_allocator_free(bag->alloc, bag);
 }
@@ -323,8 +344,35 @@ static int exec_begin(sqlite3 * db) {
   return sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
 }
 
-static void exec_rollback(sqlite3 * db) {
-  sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+static int same_tenant(const SqlBag * bag, const char * tenant,
+    size_t tenant_len) {
+  return bag->txn_db != NULL && bag->txn_tenant != NULL &&
+      bag->txn_tenant_len == tenant_len &&
+      (tenant_len == 0 || memcmp(bag->txn_tenant, tenant, tenant_len) == 0);
+}
+
+static void close_db(SqlBag * bag, sqlite3 * db) {
+  if (db != NULL && db != bag->txn_db) {
+    sqlite3_close(db);
+  }
+}
+
+static void rollback_db(SqlBag * bag, sqlite3 * db) {
+  if (db != NULL && db != bag->txn_db) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+  }
+}
+
+static GDEFSTOR_Result connect(SqlBag * bag, const char * tenant,
+    size_t tenant_len, int create, sqlite3 ** out) {
+  if (bag->txn_db != NULL) {
+    if (!same_tenant(bag, tenant, tenant_len)) {
+      return GDEFSTOR_ERR_BUSY;
+    }
+    *out = bag->txn_db;
+    return GDEFSTOR_OK;
+  }
+  return open_tenant(bag, tenant, tenant_len, create, out);
 }
 
 static GDEFSTOR_Result bag_put(void * ctx, const char * tenant,
@@ -342,14 +390,20 @@ static GDEFSTOR_Result bag_put(void * ctx, const char * tenant,
   if (len > INT_MAX || key_len > INT_MAX) {
     return GDEFSTOR_ERR_LIMIT;
   }
-  mapped = open_tenant(bag, tenant, tenant_len, 1, &db);
+  mapped = connect(bag, tenant, tenant_len, 1, &db);
   if (mapped != GDEFSTOR_OK) {
     return mapped;
   }
-  rc = exec_begin(db);
+  if (db == bag->txn_db && gdefssqlite_plant_fail_put > 0) {
+    bag->puts_in_txn += 1;
+    if (bag->puts_in_txn >= gdefssqlite_plant_fail_put) {
+      return GDEFSTOR_ERR_IO;
+    }
+  }
+  rc = db == bag->txn_db ? SQLITE_OK : exec_begin(db);
   if (rc != SQLITE_OK) {
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_prepare_v2(db,
@@ -357,9 +411,9 @@ static GDEFSTOR_Result bag_put(void * ctx, const char * tenant,
       "ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes",
       -1, &st, NULL);
   if (rc != SQLITE_OK) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_bind_text(st, 1, key, (int)key_len, SQLITE_STATIC);
@@ -372,19 +426,20 @@ static GDEFSTOR_Result bag_put(void * ctx, const char * tenant,
   }
   sqlite3_finalize(st);
   if (rc != SQLITE_DONE) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
-  rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+  rc = db == bag->txn_db ? SQLITE_OK
+                        : sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
   if (rc != SQLITE_OK) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
-  sqlite3_close(db);
+  close_db(bag, db);
   return GDEFSTOR_OK;
 }
 
@@ -407,7 +462,7 @@ static GDEFSTOR_Result bag_get(void * ctx, const char * tenant,
   if (key_len > INT_MAX) {
     return GDEFSTOR_ERR_LIMIT;
   }
-  mapped = open_tenant(bag, tenant, tenant_len, 0, &db);
+  mapped = connect(bag, tenant, tenant_len, 0, &db);
   if (mapped != GDEFSTOR_OK) {
     return mapped;
   }
@@ -415,26 +470,26 @@ static GDEFSTOR_Result bag_get(void * ctx, const char * tenant,
       "SELECT bytes FROM defiant_record WHERE key = ?", -1, &st, NULL);
   if (rc != SQLITE_OK) {
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_bind_text(st, 1, key, (int)key_len, SQLITE_STATIC);
   if (rc != SQLITE_OK) {
     sqlite3_finalize(st);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_step(st);
   if (rc == SQLITE_DONE) {
     sqlite3_finalize(st);
-    sqlite3_close(db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_INVALID;
   }
   if (rc != SQLITE_ROW) {
     sqlite3_finalize(st);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   kind = sqlite3_column_type(st, 0);
@@ -442,25 +497,25 @@ static GDEFSTOR_Result bag_get(void * ctx, const char * tenant,
   n = sqlite3_column_bytes(st, 0);
   if (sqlite3_errcode(db) == SQLITE_NOMEM) {
     sqlite3_finalize(st);
-    sqlite3_close(db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_OOM;
   }
   if (kind == SQLITE_NULL || n < 0 || (n > 0 && blob == NULL)) {
     sqlite3_finalize(st);
-    sqlite3_close(db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_CORRUPT;
   }
   copy = (uint8_t *)gcu_allocator_malloc(bag->alloc, n == 0 ? 1 : (size_t)n);
   if (copy == NULL) {
     sqlite3_finalize(st);
-    sqlite3_close(db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_OOM;
   }
   if (n > 0) {
     memcpy(copy, blob, (size_t)n);
   }
   sqlite3_finalize(st);
-  sqlite3_close(db);
+  close_db(bag, db);
   *out_bytes = copy;
   *out_len = (size_t)n;
   return GDEFSTOR_OK;
@@ -479,22 +534,22 @@ static GDEFSTOR_Result bag_remove(void * ctx, const char * tenant,
   if (key_len > INT_MAX) {
     return GDEFSTOR_ERR_LIMIT;
   }
-  mapped = open_tenant(bag, tenant, tenant_len, 0, &db);
+  mapped = connect(bag, tenant, tenant_len, 0, &db);
   if (mapped != GDEFSTOR_OK) {
     return mapped;
   }
-  rc = exec_begin(db);
+  rc = db == bag->txn_db ? SQLITE_OK : exec_begin(db);
   if (rc != SQLITE_OK) {
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_prepare_v2(db, "DELETE FROM defiant_record WHERE key = ?", -1,
       &st, NULL);
   if (rc != SQLITE_OK) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_bind_text(st, 1, key, (int)key_len, SQLITE_STATIC);
@@ -503,24 +558,25 @@ static GDEFSTOR_Result bag_remove(void * ctx, const char * tenant,
   }
   sqlite3_finalize(st);
   if (rc != SQLITE_DONE) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   if (sqlite3_changes(db) == 0) {
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_INVALID;
   }
-  rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+  rc = db == bag->txn_db ? SQLITE_OK
+                        : sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
   if (rc != SQLITE_OK) {
-    exec_rollback(db);
+    rollback_db(bag, db);
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
-  sqlite3_close(db);
+  close_db(bag, db);
   return GDEFSTOR_OK;
 }
 
@@ -540,7 +596,7 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
       out_count == NULL || (prefix == NULL && prefix_len != 0)) {
     return GDEFSTOR_ERR_INVALID;
   }
-  mapped = open_tenant(bag, tenant, tenant_len, 0, &db);
+  mapped = connect(bag, tenant, tenant_len, 0, &db);
   if (mapped == GDEFSTOR_ERR_INVALID) {
     *out_keys = NULL;
     *out_lens = NULL;
@@ -550,18 +606,19 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
   if (mapped != GDEFSTOR_OK) {
     return mapped;
   }
-  rc = sqlite3_exec(db, "BEGIN DEFERRED", NULL, NULL, NULL);
+  rc = db == bag->txn_db ? SQLITE_OK
+                        : sqlite3_exec(db, "BEGIN DEFERRED", NULL, NULL, NULL);
   if (rc != SQLITE_OK) {
     mapped = from_sqlite(rc);
-    sqlite3_close(db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_prepare_v2(db, "SELECT key FROM defiant_record ORDER BY key",
       -1, &st, NULL);
   if (rc != SQLITE_OK) {
     mapped = from_sqlite(rc);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return mapped;
   }
   while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
@@ -569,8 +626,8 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
     const unsigned char * text;
     if (n < 0) {
       sqlite3_finalize(st);
-      exec_rollback(db);
-      sqlite3_close(db);
+      rollback_db(bag, db);
+      close_db(bag, db);
       return GDEFSTOR_ERR_CORRUPT;
     }
     text = sqlite3_column_text(st, 0);
@@ -583,27 +640,28 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
   if (rc != SQLITE_DONE) {
     sqlite3_finalize(st);
     mapped = from_sqlite(rc);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return mapped;
   }
   rc = sqlite3_reset(st);
   if (rc != SQLITE_OK) {
     sqlite3_finalize(st);
     mapped = from_sqlite(rc);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return mapped;
   }
   if (count == 0) {
     sqlite3_finalize(st);
-    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    rc = db == bag->txn_db ? SQLITE_OK
+                          : sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     if (rc != SQLITE_OK) {
-      exec_rollback(db);
-      sqlite3_close(db);
+      rollback_db(bag, db);
+      close_db(bag, db);
       return from_sqlite(rc);
     }
-    sqlite3_close(db);
+    close_db(bag, db);
     *out_keys = NULL;
     *out_lens = NULL;
     *out_count = 0;
@@ -615,8 +673,8 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
     gcu_allocator_free(bag->alloc, keys);
     gcu_allocator_free(bag->alloc, lens);
     sqlite3_finalize(st);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return GDEFSTOR_ERR_OOM;
   }
   while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
@@ -635,8 +693,8 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
       gcu_allocator_free(bag->alloc, keys);
       gcu_allocator_free(bag->alloc, lens);
       sqlite3_finalize(st);
-      exec_rollback(db);
-      sqlite3_close(db);
+      rollback_db(bag, db);
+      close_db(bag, db);
       return GDEFSTOR_ERR_INTERNAL;
     }
     copy = (char *)gcu_allocator_malloc(bag->alloc, (size_t)n + 1);
@@ -647,8 +705,8 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
       gcu_allocator_free(bag->alloc, keys);
       gcu_allocator_free(bag->alloc, lens);
       sqlite3_finalize(st);
-      exec_rollback(db);
-      sqlite3_close(db);
+      rollback_db(bag, db);
+      close_db(bag, db);
       return GDEFSTOR_ERR_OOM;
     }
     if (n > 0 && text != NULL) {
@@ -667,11 +725,12 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
     }
     gcu_allocator_free(bag->alloc, keys);
     gcu_allocator_free(bag->alloc, lens);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return from_sqlite(rc);
   }
-  rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+  rc = db == bag->txn_db ? SQLITE_OK
+                        : sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
   if (rc != SQLITE_OK) {
     size_t j;
     for (j = 0; j < i; j++) {
@@ -679,14 +738,77 @@ static GDEFSTOR_Result bag_list(void * ctx, const char * tenant,
     }
     gcu_allocator_free(bag->alloc, keys);
     gcu_allocator_free(bag->alloc, lens);
-    exec_rollback(db);
-    sqlite3_close(db);
+    rollback_db(bag, db);
+    close_db(bag, db);
     return from_sqlite(rc);
   }
-  sqlite3_close(db);
+  close_db(bag, db);
   *out_keys = keys;
   *out_lens = lens;
   *out_count = i;
+  return GDEFSTOR_OK;
+}
+
+static GDEFSTOR_Result bag_begin(void * ctx, const char * tenant,
+    size_t tenant_len) {
+  SqlBag * bag = (SqlBag *)ctx;
+  sqlite3 * db = NULL;
+  GDEFSTOR_Result mapped;
+  int rc;
+  if (bag == NULL || tenant == NULL || tenant_len == 0) {
+    return GDEFSTOR_ERR_INVALID;
+  }
+  if (bag->txn_db != NULL) {
+    return GDEFSTOR_ERR_INTERNAL;
+  }
+  mapped = open_tenant(bag, tenant, tenant_len, 1, &db);
+  if (mapped != GDEFSTOR_OK) {
+    return mapped;
+  }
+  rc = exec_begin(db);
+  if (rc != SQLITE_OK) {
+    sqlite3_close(db);
+    return from_sqlite(rc);
+  }
+  bag->txn_tenant = (char *)gcu_allocator_malloc(bag->alloc, tenant_len + 1);
+  if (bag->txn_tenant == NULL) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    return GDEFSTOR_ERR_OOM;
+  }
+  memcpy(bag->txn_tenant, tenant, tenant_len);
+  bag->txn_tenant[tenant_len] = '\0';
+  bag->txn_tenant_len = tenant_len;
+  bag->txn_db = db;
+  bag->puts_in_txn = 0;
+  return GDEFSTOR_OK;
+}
+
+static GDEFSTOR_Result bag_commit(void * ctx) {
+  SqlBag * bag = (SqlBag *)ctx;
+  int rc;
+  if (bag == NULL || bag->txn_db == NULL) {
+    return GDEFSTOR_ERR_INVALID;
+  }
+  rc = sqlite3_exec(bag->txn_db, "COMMIT", NULL, NULL, NULL);
+  if (rc != SQLITE_OK) {
+    return from_sqlite(rc);
+  }
+  sqlite3_close(bag->txn_db);
+  bag->txn_db = NULL;
+  gcu_allocator_free(bag->alloc, bag->txn_tenant);
+  bag->txn_tenant = NULL;
+  bag->txn_tenant_len = 0;
+  bag->puts_in_txn = 0;
+  return GDEFSTOR_OK;
+}
+
+static GDEFSTOR_Result bag_abort(void * ctx) {
+  SqlBag * bag = (SqlBag *)ctx;
+  if (bag == NULL) {
+    return GDEFSTOR_ERR_INVALID;
+  }
+  clear_txn(bag);
   return GDEFSTOR_OK;
 }
 
@@ -720,6 +842,9 @@ GDEFSSQLITE_Result gdefssqlite_store_create(const char * directory,
   backend.get = bag_get;
   backend.remove = bag_remove;
   backend.list = bag_list;
+  backend.begin = bag_begin;
+  backend.commit = bag_commit;
+  backend.abort = bag_abort;
   rc = gdefstor_store_create(&backend, use, limits, out_store);
   if (rc != GDEFSTOR_OK) {
     bag_destroy(bag);

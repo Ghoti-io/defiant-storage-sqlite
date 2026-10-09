@@ -226,6 +226,52 @@ TEST(Io, DiskFailureOnPutIsNotCommitted) {
   gdefstor_store_destroy(store);
 }
 
+extern "C" int gdefssqlite_plant_fail_put;
+
+TEST(Commit, FailedUpdateKeepsPreviousBytes) {
+  TmpDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  GDEFSTOR_Store * store = NULL;
+  GDEFSTOR_Write * write = NULL;
+  GDEFSTOR_Column column;
+  GDEFSTOR_Projection * row = NULL;
+  GDEFSTOR_Column got;
+  const uint8_t blob[] = {9};
+  ASSERT_EQ(GDEFSSQLITE_OK,
+      gdefssqlite_store_create(dir.path().c_str(), NULL, NULL, &store));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_begin(store, "t", 1, NULL, &write));
+  memset(&column, 0, sizeof column);
+  column.name = "title";
+  column.name_len = 5;
+  column.value = (const uint8_t *)"Hello";
+  column.value_len = 5;
+  ASSERT_EQ(GDEFSTOR_OK,
+      gdefstor_projection_put(write, "page", 4, "e1", 2, &column, 1));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_commit(write));
+  gdefssqlite_plant_fail_put = 2;
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_begin(store, "t", 1, NULL, &write));
+  column.value = (const uint8_t *)"There";
+  ASSERT_EQ(GDEFSTOR_OK,
+      gdefstor_projection_put(write, "page", 4, "e1", 2, &column, 1));
+  ASSERT_EQ(GDEFSTOR_OK,
+      gdefstor_blob_put(write, "ab", 2, blob, sizeof blob));
+  EXPECT_EQ(GDEFSTOR_ERR_IO, gdefstor_write_commit(write));
+  gdefssqlite_plant_fail_put = 0;
+  ASSERT_EQ(GDEFSTOR_OK,
+      gdefstor_projection_get(store, "t", 1, "page", 4, "e1", 2, &row));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_projection_column(row, 0, &got));
+  ASSERT_EQ(got.value_len, 5u);
+  EXPECT_EQ(0, memcmp(got.value, "Hello", 5));
+  gdefstor_projection_free(row);
+  {
+    uint8_t * bytes = NULL;
+    size_t len = 0;
+    EXPECT_EQ(GDEFSTOR_ERR_INVALID,
+        gdefstor_blob_get(store, "t", 1, "ab", 2, &bytes, &len));
+  }
+  gdefstor_store_destroy(store);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
