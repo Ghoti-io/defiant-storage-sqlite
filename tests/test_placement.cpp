@@ -175,6 +175,31 @@ TEST(Busy, SqliteBusyDoesNotWait) {
   gdefstor_store_destroy(store);
 }
 
+TEST(Limits, StoreCapAppliesWhenWriteLimitsAreNull) {
+  TmpDir dir;
+  ASSERT_FALSE(dir.path().empty());
+  GDEFSTOR_Limits limits;
+  gdefstor_limits_default(&limits);
+  limits.max_blob_bytes = 1;
+  GDEFSTOR_Store * store = NULL;
+  ASSERT_EQ(GDEFSSQLITE_OK,
+      gdefssqlite_store_create(dir.path().c_str(), NULL, &limits, &store));
+  GDEFSTOR_Write * write = NULL;
+  ASSERT_EQ(GDEFSTOR_OK,
+      gdefstor_write_begin(store, "capped", 6, NULL, &write));
+  const uint8_t two[] = {1, 2};
+  EXPECT_EQ(GDEFSTOR_ERR_LIMIT,
+      gdefstor_blob_put(write, "k", 1, two, sizeof two));
+  gdefstor_write_abort(write);
+  uint8_t * bytes = NULL;
+  size_t len = 0;
+  EXPECT_EQ(GDEFSTOR_ERR_INVALID,
+      gdefstor_blob_get(store, "absent", 6, "k", 1, &bytes, &len));
+  EXPECT_EQ(bytes, nullptr);
+  EXPECT_FALSE(std::filesystem::exists(dir.file(hex_name("absent"))));
+  gdefstor_store_destroy(store);
+}
+
 TEST(Io, DiskFailureOnPutIsNotCommitted) {
   TmpDir dir;
   ASSERT_FALSE(dir.path().empty());

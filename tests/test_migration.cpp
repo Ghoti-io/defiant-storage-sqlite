@@ -175,9 +175,10 @@ TEST(Migration, FailedStepLeavesVersionUnrecorded) {
   ASSERT_EQ(SQLITE_OK, sqlite3_open(db_path.c_str(), &db));
   ASSERT_EQ(SQLITE_OK, sqlite3_exec(db,
       "CREATE TABLE record_v0 (key TEXT PRIMARY KEY, bytes BLOB NOT NULL);"
-      "CREATE TABLE defiant_record (key TEXT PRIMARY KEY, bytes BLOB NOT NULL);"
       "INSERT INTO record_v0 (key, bytes) VALUES ('b:6162', X'102030');"
-      "INSERT INTO defiant_record (key, bytes) VALUES ('b:6162', X'9999');",
+      "CREATE TABLE defiant_migration (version INTEGER PRIMARY KEY);"
+      "CREATE TRIGGER abort_version BEFORE INSERT ON defiant_migration "
+      "BEGIN SELECT RAISE(ABORT, 'fail version'); END;",
       NULL, NULL, NULL));
   sqlite3_close(db);
 
@@ -194,10 +195,13 @@ TEST(Migration, FailedStepLeavesVersionUnrecorded) {
   EXPECT_TRUE(std::filesystem::exists(db_path));
   ASSERT_EQ(SQLITE_OK,
       sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY, NULL));
+  EXPECT_EQ(1, query_int(db,
+                  "SELECT COUNT(*) FROM record_v0 WHERE key = 'b:6162' "
+                  "AND bytes = X'102030'"));
   EXPECT_EQ(0, query_int(db,
-                  "SELECT COUNT(*) FROM sqlite_master "
-                  "WHERE name = 'defiant_migration'"));
-  EXPECT_EQ(1, query_int(db, "SELECT COUNT(*) FROM record_v0"));
+                  "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+                  "AND name = 'defiant_record'"));
+  EXPECT_EQ(0, query_int(db, "SELECT COUNT(*) FROM defiant_migration"));
   sqlite3_close(db);
 }
 
