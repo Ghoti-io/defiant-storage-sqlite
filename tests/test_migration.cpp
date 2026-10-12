@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include "tmpdir.h"
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -64,11 +65,7 @@ std::string hex_name(const std::string & tenant) {
 class TmpDir {
 public:
   TmpDir() {
-    char tmpl[] = "/tmp/gdefssqlite-mig-XXXXXX";
-    char * dir = mkdtemp(tmpl);
-    if (dir != NULL) {
-      path_ = dir;
-    }
+    path_ = MakeTempDir("gdefssqlite-mig-");
   }
   ~TmpDir() {
     if (!path_.empty()) {

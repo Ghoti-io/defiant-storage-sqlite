@@ -32,6 +32,7 @@
 #include <ghoti.io/defiant-storage-sqlite/defiant-storage-sqlite.h>
 
 #include <filesystem>
+#include "tmpdir.h"
 #include <string>
 #include <unistd.h>
 #include <utility>
@@ -71,18 +72,17 @@ static std::vector<std::pair<GDEFSTOR_Store *, std::string>> g_dirs;
 
 GDEFSTOR_Result ConformanceOpen(GDEFSTOR_Store ** out,
     const GDEFSTOR_Allocator * allocator) {
-  char tmpl[] = "/tmp/gdefssqlite-conf-XXXXXX";
-  char * dir;
+  std::string dir;
   GDEFSTOR_Store * store = NULL;
   GDEFSSQLITE_Result rc;
   if (out == NULL) {
     return GDEFSTOR_ERR_INVALID;
   }
-  dir = mkdtemp(tmpl);
-  if (dir == NULL) {
+  dir = MakeTempDir("gdefssqlite-conf-");
+  if (dir.empty()) {
     return GDEFSTOR_ERR_IO;
   }
-  rc = gdefssqlite_store_create(dir, allocator, NULL, &store);
+  rc = gdefssqlite_store_create(dir.c_str(), allocator, NULL, &store);
   if (rc != GDEFSSQLITE_OK) {
     std::filesystem::remove_all(dir);
     return to_port(rc);

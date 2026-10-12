@@ -17,6 +17,8 @@ MARGS="-j${GHOTI_CHECK_JOBS:-$(n=$(nproc 2>/dev/null || echo 4); [ "$n" -gt 4 ] 
 unset MAKEFLAGS MFLAGS
 
 ROOT=$(pwd)
+# A Windows build names its test programs with an extension.
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) EXE_EXT=.exe ;; *) EXE_EXT= ;; esac
 SCRATCH="$ROOT/build/defects"
 rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH"
@@ -72,7 +74,7 @@ PY
   rm -f "$dir/$BUILD_DIR"/apps/test* "$dir/$BUILD_DIR"/apps/*.a \
     "$dir/$BUILD_DIR"/apps/*.so*
   if ( cd "$dir" && "$MAKE_CMD" --no-print-directory test TEST_GATES= \
-      TEST_EXECUTABLES="$BUILD_DIR/apps/$exe" $MARGS ) > "$dir.log" 2>&1; then
+      TEST_EXECUTABLES="$BUILD_DIR/apps/$exe$EXE_EXT" $MARGS ) > "$dir.log" 2>&1; then
     printf 'check-defects: %s: the tests PASSED with the defect planted\n' "$name" >&2
     fail=1
   elif grep -q "FAILED.*$expect" "$dir.log"; then

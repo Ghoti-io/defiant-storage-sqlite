@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include "tmpdir.h"
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
@@ -44,11 +45,7 @@ namespace {
 class TmpDir {
 public:
   TmpDir() {
-    char tmpl[] = "/tmp/gdefssqlite-place-XXXXXX";
-    char * dir = mkdtemp(tmpl);
-    if (dir != NULL) {
-      path_ = dir;
-    }
+    path_ = MakeTempDir("gdefssqlite-place-");
   }
   ~TmpDir() {
     if (!path_.empty()) {
@@ -201,6 +198,9 @@ TEST(Limits, StoreCapAppliesWhenWriteLimitsAreNull) {
 }
 
 TEST(Io, DiskFailureOnPutIsNotCommitted) {
+#ifdef _WIN32
+  GTEST_SKIP() << "a read-only directory does not stop a Windows process creating files in it";
+#endif
   TmpDir dir;
   ASSERT_FALSE(dir.path().empty());
   GDEFSTOR_Store * store = NULL;
