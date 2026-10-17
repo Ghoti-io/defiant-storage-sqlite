@@ -844,7 +844,9 @@ typedef struct Qb {
   char ** owned;
   size_t nowned;
   size_t owned_cap;
-  size_t prefix_len;
+  size_t prefix_len;       /* of the type being queried: the outer row's */
+  int in_exists;           /* inside an EXISTS: rows are t, the outer is r */
+  size_t exists_prefix_len;/* of the type an EXISTS looks at */
   int max_vars;
   int max_args;
   int unsupported;
@@ -912,6 +914,12 @@ static void qb_free(Qb * q) {
 static void emit_join(Qb * q, const GDEFSTOR_QueryOperand * o) {
   char * prefix = NULL;
   size_t prefix_len = 0;
+  /* A joined row is the one of the other type with the entity of the row the
+   * operand is of: the outer row (alias r) for an OUTER operand, else the row
+   * the statement is looking at (r, or t inside an EXISTS). */
+  int outer = (o->flags & GDEFSTOR_QUERY_OUTER) != 0;
+  const char * alias = (outer || !q->in_exists) ? "r" : "t";
+  size_t base_prefix = (outer || !q->in_exists) ? q->prefix_len : q->exists_prefix_len;
   if (o->kind != GDEFSTOR_QUERY_COLUMN || o->join_type == NULL) {
     sb_str(&q->sql, "NULL");
     return;
@@ -926,8 +934,10 @@ static void emit_join(Qb * q, const GDEFSTOR_QueryOperand * o) {
   }
   sb_str(&q->sql, "(SELECT j.bytes FROM defiant_record j WHERE j.key = ");
   qb_bind(q, kBindText, prefix, prefix_len, 0);
-  sb_str(&q->sql, " || substr(r.key, ");
-  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)q->prefix_len + 1);
+  sb_str(&q->sql, " || substr(");
+  sb_str(&q->sql, alias);
+  sb_str(&q->sql, ".key, ");
+  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)base_prefix + 1);
   sb_str(&q->sql, "))");
 }
 
@@ -943,6 +953,8 @@ static void emit_texts(Qb * q, const GDEFSTOR_QueryOperand * o) {
 }
 
 static void emit_node(Qb * q, const GDEFSTOR_QueryNode * n);
+static char * hi_bound(const GDEFSSQLITE_Allocator * alloc, const char * prefix,
+    size_t prefix_len);
 
 /* A balanced chain, so the depth of the expression the parser sees is the
  * logarithm of the number of children and not the number. */
@@ -993,10 +1005,41 @@ static void emit_node(Qb * q, const GDEFSTOR_QueryNode * n) {
       emit_node(q, n->children[0]);
       sb_str(&q->sql, ")");
       return;
+    case GDEFSTOR_QUERY_EXISTS: {
+      /* A semi-join: some row of the other type, by its key range, for which
+       * the child holds, with the row being decided as the outer one. */
+      char * prefix = NULL;
+      size_t prefix_len = 0;
+      char * hi;
+      if (gdefstor_projection_key_prefix(q->alloc, n->exists_type,
+              n->exists_type_len, &prefix, &prefix_len) != GDEFSTOR_OK) {
+        q->oom = 1;
+        return;
+      }
+      if (qb_keep(q, prefix) == NULL) {
+        return;
+      }
+      hi = hi_bound(q->alloc, prefix, prefix_len);
+      if (hi == NULL || qb_keep(q, hi) == NULL) {
+        q->oom = 1;
+        return;
+      }
+      sb_str(&q->sql, "EXISTS (SELECT 1 FROM defiant_record t WHERE t.key >= ");
+      qb_bind(q, kBindText, prefix, prefix_len, 0);
+      sb_str(&q->sql, " AND t.key < ");
+      qb_bind(q, kBindText, hi, prefix_len, 0);
+      sb_str(&q->sql, " AND (");
+      q->in_exists = 1;
+      q->exists_prefix_len = prefix_len;
+      emit_node(q, n->children[0]);
+      q->in_exists = 0;
+      sb_str(&q->sql, "))");
+      return;
+    }
     default:
       break;
   }
-  nargs = 5 + (n->left.kind == GDEFSTOR_QUERY_CONST ? n->left.text_count : 0) +
+  nargs = 7 + (n->left.kind == GDEFSTOR_QUERY_CONST ? n->left.text_count : 0) +
           (n->right.kind == GDEFSTOR_QUERY_CONST ? n->right.text_count : 0);
   if (nargs > (size_t)q->max_args) {
     q->unsupported = 1;
@@ -1004,7 +1047,8 @@ static void emit_node(Qb * q, const GDEFSTOR_QueryNode * n) {
   }
   sb_str(&q->sql, "gdq_leaf(");
   qb_bind(q, kBindPointer, n, 0, 0);
-  sb_str(&q->sql, ", r.bytes, r.key, ");
+  sb_str(&q->sql, q->in_exists ? ", t.bytes, t.key, r.bytes, r.key, "
+                               : ", r.bytes, r.key, NULL, NULL, ");
   emit_join(q, &n->left);
   sb_str(&q->sql, ", ");
   emit_join(q, &n->right);
@@ -1091,7 +1135,8 @@ static GDEFSTOR_QueryRowRef value_row(sqlite3_value * v) {
   return ref;
 }
 
-/* gdq_leaf(node, row, key, left_join, right_join, constants...) */
+/* gdq_leaf(node, row, key, outer_row, outer_key, left_join, right_join,
+ * constants...) */
 static void udf_leaf(sqlite3_context * c, int argc, sqlite3_value ** argv) {
   SqlBag * bag = (SqlBag *)sqlite3_user_data(c);
   const GDEFSTOR_QueryNode * node;
@@ -1103,18 +1148,20 @@ static void udf_leaf(sqlite3_context * c, int argc, sqlite3_value ** argv) {
   size_t i;
   char * entity = NULL;
   size_t entity_len = 0;
+  char * outer_entity = NULL;
+  size_t outer_entity_len = 0;
   int holds = 0;
   GDEFSTOR_Result rc;
   node = (const GDEFSTOR_QueryNode *)sqlite3_value_pointer(argv[0],
       QUERY_POINTER_TYPE);
-  if (node == NULL || argc < 5) {
+  if (node == NULL || argc < 7) {
     udf_fail(c, GDEFSTOR_ERR_INTERNAL);
     return;
   }
   copy = *node;
   nl = node->left.kind == GDEFSTOR_QUERY_CONST ? node->left.text_count : 0;
   nr = node->right.kind == GDEFSTOR_QUERY_CONST ? node->right.text_count : 0;
-  if ((size_t)argc != 5 + nl + nr) {
+  if ((size_t)argc != 7 + nl + nr) {
     udf_fail(c, GDEFSTOR_ERR_INTERNAL);
     return;
   }
@@ -1127,7 +1174,7 @@ static void udf_leaf(sqlite3_context * c, int argc, sqlite3_value ** argv) {
       return;
     }
     for (i = 0; i < nl + nr; i++) {
-      sqlite3_value * v = argv[5 + i];
+      sqlite3_value * v = argv[7 + i];
       const void * b = sqlite3_value_blob(v);
       texts[i].bytes = b == NULL ? (const uint8_t *)"" : (const uint8_t *)b;
       texts[i].len = (size_t)sqlite3_value_bytes(v);
@@ -1141,15 +1188,23 @@ static void udf_leaf(sqlite3_context * c, int argc, sqlite3_value ** argv) {
   }
   memset(&env, 0, sizeof env);
   env.main = value_row(argv[1]);
-  env.left_join = value_row(argv[3]);
-  env.right_join = value_row(argv[4]);
+  env.outer = value_row(argv[3]);
+  env.left_join = value_row(argv[5]);
+  env.right_join = value_row(argv[6]);
   rc = key_entity(bag->alloc, (const char *)sqlite3_value_text(argv[2]),
       (size_t)sqlite3_value_bytes(argv[2]), &entity, &entity_len);
+  if (rc == GDEFSTOR_OK && env.outer.bytes != NULL) {
+    rc = key_entity(bag->alloc, (const char *)sqlite3_value_text(argv[4]),
+        (size_t)sqlite3_value_bytes(argv[4]), &outer_entity, &outer_entity_len);
+  }
   if (rc == GDEFSTOR_OK) {
     env.entity = (const uint8_t *)entity;
     env.entity_len = entity_len;
+    env.outer_entity = (const uint8_t *)outer_entity;
+    env.outer_entity_len = outer_entity_len;
     rc = gdefstor_query_leaf(bag->alloc, &copy, &env, &holds);
   }
+  gcu_allocator_free(bag->alloc, outer_entity);
   gcu_allocator_free(bag->alloc, entity);
   gcu_allocator_free(bag->alloc, texts);
   if (rc != GDEFSTOR_OK) {

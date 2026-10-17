@@ -39,8 +39,8 @@ plant range-without-upper-bound src/sqlite.c testConformance \
 # The joined row looked up at the wrong place in the key.
 plant join-at-wrong-offset src/sqlite.c testConformance \
   'Query.JoinedRowIsTheSameEntityOfAnotherType' \
-  '  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)q->prefix_len + 1);' \
-  '  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)q->prefix_len);'
+  '  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)base_prefix + 1);' \
+  '  qb_bind(q, kBindInt, NULL, 0, (sqlite3_int64)base_prefix);'
 
 # The integer ordering of the entity tiebreak left off.
 plant tiebreak-as-bytes src/sqlite.c testConformance \
@@ -96,5 +96,24 @@ plant bind-limit-ignored src/sqlite.c testQuery \
     q->unsupported = 1;
   }' \
   '  (void)q->max_vars;'
+
+# The type an EXISTS looks at, with no upper end to its range.
+plant exists-range-unbounded src/sqlite.c testConformance \
+  'Query.ExistsIsASemiJoinOnTheOuterRow' \
+  '      qb_bind(q, kBindText, hi, prefix_len, 0);' \
+  '      qb_bind(q, kBindText, "\x7f", 1, 0);'
+
+# The outer row'"'"'s joined row looked up from the other type'"'"'s key.
+plant exists-outer-join-from-inner src/sqlite.c testConformance \
+  'Query.ExistsReadsTheOuterRowsJoinedRow' \
+  '  const char * alias = (outer || !q->in_exists) ? "r" : "t";' \
+  '  const char * alias = q->in_exists ? "t" : "r";'
+
+# An EXISTS handed back to the port to scan.
+plant exists-not-compiled src/sqlite.c testQuery \
+  'QueryDir.ASemiJoinIsPushedDownToo' \
+  '      /* A semi-join: some row of the other type, by its key range, for which' \
+  '      q->unsupported = 1;
+      /* A semi-join: some row of the other type, by its key range, for which'
 
 plant_finish

@@ -127,6 +127,66 @@ TEST_F(QueryDir, PushedDownIsUsed) {
   EXPECT_EQ(0, gdefssqlite_query_fallback);
 }
 
+TEST_F(QueryDir, ASemiJoinIsPushedDownToo) {
+  Fill(30);
+  /* Rows of another type say which k are members. */
+  {
+    GDEFSTOR_Write * write = NULL;
+    ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_begin(store, "t", 1, NULL, &write));
+    for (int i = 0; i < 3; i++) {
+      std::string entity = "m" + std::to_string(i);
+      std::string v = std::to_string(i * 2);
+      GDEFSTOR_Column col;
+      memset(&col, 0, sizeof col);
+      col.name = "who";
+      col.name_len = 3;
+      col.value = (const uint8_t *)v.data();
+      col.value_len = v.size();
+      ASSERT_EQ(GDEFSTOR_OK, gdefstor_projection_put(write, "members", 7,
+                                 entity.data(), entity.size(), &col, 1));
+    }
+    ASSERT_EQ(GDEFSTOR_OK, gdefstor_write_commit(write));
+  }
+  GDEFSTOR_QueryNode inner;
+  memset(&inner, 0, sizeof inner);
+  inner.op = GDEFSTOR_QUERY_EQ;
+  inner.left.kind = GDEFSTOR_QUERY_COLUMN;
+  inner.left.column = "who";
+  inner.left.column_len = 3;
+  inner.right.kind = GDEFSTOR_QUERY_COLUMN;
+  inner.right.flags = GDEFSTOR_QUERY_OUTER;
+  inner.right.column = "k";
+  inner.right.column_len = 1;
+  const GDEFSTOR_QueryNode * kids[1] = {&inner};
+  GDEFSTOR_QueryNode exists;
+  memset(&exists, 0, sizeof exists);
+  exists.op = GDEFSTOR_QUERY_EXISTS;
+  exists.exists_type = "members";
+  exists.exists_type_len = 7;
+  exists.children = kids;
+  exists.child_count = 1;
+  GDEFSTOR_Query q;
+  memset(&q, 0, sizeof q);
+  q.size = sizeof q;
+  q.where = &exists;
+  q.entity_numeric = 1;
+  GDEFSTOR_QueryResult * r = NULL;
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_projection_query(store, "t", 1, "rows", 4, &q, &r));
+  /* k in {0, 2, 4}: three of every ten. */
+  EXPECT_EQ(9u, gdefstor_query_result_total(r));
+  std::string ids;
+  for (size_t i = 0; i < gdefstor_query_result_rows(r); i++) {
+    const char * e = NULL;
+    size_t n = 0;
+    gdefstor_query_result_entity(r, i, &e, &n);
+    ids += std::string(e, n) + ",";
+  }
+  EXPECT_EQ("1,3,5,11,13,15,21,23,25,", ids);
+  gdefstor_query_result_free(r);
+  EXPECT_EQ(1, gdefssqlite_query_native);
+  EXPECT_EQ(0, gdefssqlite_query_fallback);
+}
+
 TEST_F(QueryDir, ATreeTooWideForOneStatementIsScannedByThePort) {
   Fill(30);
   /* GDEFSTOR_QUERY_MAX_TEXTS caps one operand, so the constants are spread
