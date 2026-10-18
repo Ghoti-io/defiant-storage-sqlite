@@ -408,8 +408,23 @@ ifndef SKIP_DEP_CHECK
 $(error ghoti.io-vendor-sqlite was not found by pkg-config. Install vendor-sqlite into its prefix, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
 endif
 endif
-INCLUDE += $(STOR_CFLAGS) $(SQLITE_CFLAGS)
-DEP_LIBS := $(STOR_LIBS) $(SQLITE_LIBS)
+# defiant-storage-sql: the dialect and the executor are this library's; every
+# statement of the entity port and the key store is that library's.
+SQL_PC ?= ghoti.io-defiant-storage-sql$(BRANCH)
+SQL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(SQL_PC) 2>/dev/null)
+SQL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(SQL_PC) 2>/dev/null)
+ifeq ($(strip $(SQL_LIBS)),)
+ifndef SKIP_DEP_CHECK
+$(error ghoti.io-defiant-storage-sql was not found by pkg-config. Install defiant-storage-sql into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file.)
+endif
+endif
+INCLUDE += $(STOR_CFLAGS) $(SQL_CFLAGS) $(SQLITE_CFLAGS)
+DEP_LIBS := $(SQL_LIBS) $(STOR_LIBS) $(SQLITE_LIBS)
+# The tests also compare this backend's answers with the memory backend's
+# (testAgree). It is a test dependency only: the library does not link it.
+MEMORY_PC ?= ghoti.io-defiant-storage-memory$(BRANCH)
+MEMORY_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(MEMORY_PC) 2>/dev/null)
+MEMORY_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(MEMORY_PC) 2>/dev/null)
 
 # Automatically collect all .c source files under the src directory.
 SOURCES := $(shell find src -type f -name '*.c')
@@ -590,20 +605,20 @@ endif
 
 # Test sources live in tests/ and tests/unit/; the object name comes from the
 # basename either way, so the executable name matches.
-$(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
+$(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
+$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(OBJ_DIR)/tests/%.o: tests/conformance/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
+$(OBJ_DIR)/tests/%.o: tests/conformance/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Build rule for one test executable. $1 = source path, $2 = executable name.
 # Tests compile to .o first and link separately, so a library change relinks
@@ -622,11 +637,21 @@ $(APP_DIR)/$2$(EXE_EXTENSION): $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) \
 		$(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking Test: $2 ###\n"
 	@mkdir -p $$(@D)
-	$(CXX) $(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) $(LDFLAGS) $(TEST_LDFLAGS) $(MEMLIBRARY) $(DEP_LIBS) $(TESTFLAGS)
+	$(CXX) $(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $(TEST_HELPER_OBJ) $(LDFLAGS) $(TEST_LDFLAGS) $(MEMLIBRARY) $(DEP_LIBS) $(MEMORY_LIBS) $(TESTFLAGS)
 endef
 
 $(foreach pair,$(TEST_PAIRS),\
 	$(eval $(call test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
+
+# The test objects need defiant-storage-memory's headers (testAgree).
+# Checked here rather than at parse time, so that building and installing
+# the library never needs it.
+.PHONY: need-memory
+need-memory:
+	@if [ -z "$(strip $(MEMORY_LIBS))" ]; then \
+		printf '%s\n' "ghoti.io-defiant-storage-memory was not found by pkg-config, and the tests compare this backend with it. Install defiant-storage-memory into PREFIX, or point PKG_CONFIG_PATH at the directory holding its .pc file." >&2; \
+		exit 1; \
+	fi
 
 ####################################################################
 # Examples
@@ -1136,20 +1161,20 @@ $(ASAN_APP_DIR)/$(ASAN_TARGET): $(ASAN_LIBOBJECTS)
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(DEP_LIBS)
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/conformance/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/conformance/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN) need-memory
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests $(STOR_CONFORMANCE_I) $(MEMORY_CFLAGS) -DGDEFSSQLITE_TEST_DATA=\"$(TEST_DATA)\" -DGDEFSSQLITE_TEST_CORPUS=\"$(TEST_CORPUS)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 define asan-test-executable-rule
 ASAN_TEST_OBJ_$1 := $(ASAN_OBJ_DIR)/tests/$(basename $(notdir $1)).o
@@ -1157,7 +1182,7 @@ ASAN_TEST_OBJ_$1 := $(ASAN_OBJ_DIR)/tests/$(basename $(notdir $1)).o
 $(ASAN_APP_DIR)/$2$(EXE_EXTENSION): $$(ASAN_TEST_OBJ_$1) $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan Test: $2 ###\n"
 	@mkdir -p $$(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $(ASAN_LDFLAGS) $(ASAN_MEMLIBRARY) $(DEP_LIBS) $(TESTFLAGS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $(ASAN_LDFLAGS) $(ASAN_MEMLIBRARY) $(DEP_LIBS) $(MEMORY_LIBS) $(TESTFLAGS)
 endef
 
 $(foreach pair,$(TEST_PAIRS),\
@@ -1268,7 +1293,7 @@ LDCONF_INSTALL_PATH ?= /etc/ld.so.conf.d
 # What goes in the .pc Requires: field. Built from the same variables the
 # compile uses, so a dependency on another branch cannot be named one way for
 # the build and another way for consumers.
-PC_REQUIRES := $(STOR_PC),$(SQLITE_PC)
+PC_REQUIRES := $(STOR_PC),$(SQL_PC),$(SQLITE_PC)
 
 # Where this project's own .pc file is installed.
 PKGCONFIG_INSTALL_PATH ?= $(PC_INSTALL_PATH)

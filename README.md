@@ -9,8 +9,38 @@ stay in the port.
 `gdefssqlite_store_create` returns a `GDEFSTOR_Store`. Close it with
 `gdefstor_store_destroy`.
 
-Depends on `defiant-storage` and `vendor-sqlite` through pkg-config. It does
-not vendor a second SQLite amalgamation.
+Depends on `defiant-storage`, `defiant-storage-sql` and `vendor-sqlite`
+through pkg-config. It does not vendor a second SQLite amalgamation. Its tests
+also need `defiant-storage-memory`, to compare answers with it.
+
+## The entity port and the key store
+
+`model.h` opens the entity port (`defiant-storage`'s `model.h`) on SQLite:
+`gdefssqlite_model_store_create()` takes a directory and keeps one file per
+tenant, in WAL mode, with a write connection and read connections of their own
+per tenant and a statement cache per connection. Every statement is written by
+`defiant-storage-sql`; this library is the SQLite dialect and the executor.
+`gdefssqlite_keystore_create()` is the key store port in files of its own
+(`<hex>.keys.db`), with `secure_delete` on and the WAL truncated after each
+write, so a destroyed key's bytes are in no file afterwards. A file this layout
+does not know (the milestone-1 files below, a newer version, the other kind of
+store) is refused with a sentence naming the cause and left byte for byte as it
+was. `documentation/sqlite.md` has the files, pragmas, connections and
+refusals.
+
+```c
+GDEFSTOR_Store * store = NULL;
+gdefssqlite_model_store_create("/var/defiant/data", NULL, NULL, NULL, &store);
+```
+
+Its tests: `testModel` runs the port's conformance suites (`model.inc`, with
+the purchase-order fixture, and `keystore.inc`) with every query also answered
+by the reference scan; `testAgree` is the seeded sweep against the reference
+scan and the memory backend; `testScale` asserts rows-scanned bounds and query
+plans at 10,000 entities; `testFiles` covers refused files, recorded schema
+steps, connections, a killed write, the cache and the key store's bytes.
+
+## The key/bytes store
 
 ```c
 GDEFSTOR_Store * store = NULL;

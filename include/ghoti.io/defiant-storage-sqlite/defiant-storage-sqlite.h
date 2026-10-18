@@ -30,6 +30,7 @@
 #include <ghoti.io/defiant-storage-sqlite/macros.h>
 #include <ghoti.io/defiant-storage-sqlite/allocator.h>
 #include <ghoti.io/defiant-storage-sqlite/core.h>
+#include <ghoti.io/defiant-storage-sqlite/model.h>
 #include <ghoti.io/defiant-storage-sqlite/sqlite.h>
 
 #endif /* GHOTI_IO_GDEFSSQLITE_DEFIANT_STORAGE_SQLITE_H */
