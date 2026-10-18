@@ -104,6 +104,15 @@ A begin that finds another process writing the tenant waits up to
 tables in a transaction of its own; two processes racing to do it serialise on
 `BEGIN IMMEDIATE`, and the second finds the tables made.
 
+Indexes are built after the step that declares them commits, never inside it
+(AD-15; defiant-storage-sql's `sql.md`, section 3): on the write connection,
+outside any transaction, as a plain `CREATE INDEX IF NOT EXISTS` (SQLite builds
+an index atomically, so this dialect has no `index_build`, `index_valid` or
+`index_drop`), each then marked built in a transaction of its own. A build
+that fails (a busy file) leaves the field reading `GDEFSTOR_INDEX_INDEXING`
+until the next commit of the tenant builds it; queries answer the same either
+way.
+
 ## 5. The statement cache
 
 Each connection keeps up to `statement_cache` prepared statements (default
