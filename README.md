@@ -39,6 +39,9 @@ by the reference scan; `testAgree` is the seeded sweep against the reference
 scan and the memory backend; `testScale` asserts rows-scanned bounds and query
 plans at 10,000 entities; `testFiles` covers refused files, recorded schema
 steps, connections, a killed write, the cache and the key store's bytes.
+`check-model` plants five defects (an index step dropped, a milestone-1 file
+opened, DDL outside a step, `secure_delete` off, reads on the write connection)
+and requires a named test to fail for each.
 
 ## The key/bytes store
 
