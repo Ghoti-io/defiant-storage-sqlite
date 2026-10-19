@@ -869,6 +869,33 @@ TEST(ModelKeyStore, ADestroyedKeyLeavesNoBytesInTheFile) {
   EXPECT_TRUE(sd.empty()) << "a data-store table in the key store";
 }
 
+/* Sealed material a caller put (story S5b: core's wrapped subject keys) goes
+ * from the files with its erasure, as a key the store made does. */
+TEST(ModelKeyStore, DestroyedSealedMaterialLeavesNoBytesInTheFile) {
+  Dir d;
+  ASSERT_FALSE(d.path.empty());
+  KnownKeys known;
+  GDEFSTOR_KeyCipher cipher = Known(&known);
+  GDEFSTOR_KeyStore * ks = nullptr;
+  ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_keystore_create(d.path.c_str(),
+      &cipher, nullptr, nullptr, &ks));
+  const std::string m1 = "zq-sealed-material-one-5b1f0c2e9d";
+  const std::string m2 = "zq-sealed-material-two-7a44e8b013";
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_keystore_subject_put(ks, kTenant, 2, "s1", 2,
+      reinterpret_cast<const uint8_t *>(m1.data()), m1.size()));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_keystore_subject_put(ks, kTenant, 2, "s2", 2,
+      reinterpret_cast<const uint8_t *>(m2.data()), m2.size()));
+  std::string disk = KeyBytes(d);
+  ASSERT_TRUE(std::string::npos != disk.find(m1)) << "the check cannot see it";
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_keystore_erase(ks, kTenant, 2, "s1", 2, 9));
+  disk = KeyBytes(d);
+  EXPECT_TRUE(std::string::npos == disk.find(m1))
+      << "destroyed material is still in the key store's files";
+  EXPECT_TRUE(std::string::npos != disk.find(m2));
+  gdefstor_keystore_destroy(ks);
+  EXPECT_TRUE(std::string::npos == KeyBytes(d).find(m1));
+}
+
 /* A key store file and a data store file are never mistaken for each other:
  * each open refuses the other's file, and leaves it as it was. */
 TEST(ModelKeyStore, KeyFilesAndDataFilesAreNotConfused) {

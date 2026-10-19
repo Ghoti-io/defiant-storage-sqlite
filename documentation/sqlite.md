@@ -49,7 +49,7 @@ Every connection, after the checks of section 3, runs:
 | --- | --- |
 | `journal_mode=WAL` | readers see the last commit while a write is open; a write killed part way leaves frames with no commit, which are not the database |
 | `synchronous=FULL` | a commit is on disk when it returns |
-| `secure_delete=ON` (key store only) | a deleted key's bytes are zeroed in its page, not left in a free block; read back and required |
+| `secure_delete=ON` (key store only) | a deleted key's bytes, and deleted sealed material's, are zeroed in their page, not left in a free block; read back and required |
 | `query_only=ON` (read connections) | a read connection cannot write |
 
 and is opened with loadable extensions off, `SQLITE_DBCONFIG_DEFENSIVE` on and
