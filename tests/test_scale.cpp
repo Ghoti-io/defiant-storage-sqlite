@@ -60,6 +60,22 @@ const int I = GDEFSTOR_FIELD_INTEGER;
 const int R = GDEFSTOR_FIELD_REFERENCE;
 const unsigned IDX = GDEFSTOR_FIELD_INDEXED;
 const unsigned MUL = GDEFSTOR_FIELD_MULTIPLE;
+const unsigned PER = GDEFSTOR_FIELD_PERSONAL;
+
+/* An order's personal contact: its subject is one of 1,000 people (ten
+ * orders each), and its blind-index MAC one of 500 (twenty orders each). */
+std::string Subject(int i) {
+  char b[16];
+  std::snprintf(b, sizeof b, "p%04d", i % 1000);
+  return b;
+}
+
+std::string MacFor(int k) {
+  std::string m(GDEFSTOR_BLIND_MAC_BYTES, 'm');
+  std::snprintf(&m[0], m.size(), "mac-%04d", k % 500);
+  m[8] = 'x';
+  return m;
+}
 
 int Orders() {
   const char * e = std::getenv("GDEFSSQLITE_SCALE_ORDERS");
@@ -125,6 +141,7 @@ Node Order(int i) {
   n.Set("amount", Num(I, i));
   n.Set("buyer", Ref(Id('c', i % kCusts, 4)));
   n.Set("note", Txt("n" + std::to_string(i % 7)));
+  n.Set("contact", Personal(T, "sealed" + std::to_string(i), Subject(i)));
   Node & l = n.Add("lines");
   l.Set("sku", Txt(Id('s', i % 2000, 4)));
   l.Set("qty", Num(I, 1 + i % 3));
@@ -148,6 +165,18 @@ GDEFSTOR_Result SaveNew(GDEFSTOR_Write * w, const char * type,
   }
   if (rc == GDEFSTOR_OK) {
     rc = Fill(t, 0, tree);
+  }
+  GDEFSTOR_Value contact;
+  if (rc == GDEFSTOR_OK && gdefstor_tree_get(t, 0, "contact", 7, &contact) ==
+          GDEFSTOR_OK && contact.type != 0) {
+    /* The order's number is its index: N00042 has MAC 42 % 500. */
+    std::string mac = MacFor(std::atoi(pid.c_str() + 1));
+    GDEFSTOR_BlindMac b;
+    std::memset(&b, 0, sizeof b);
+    b.size = sizeof b;
+    b.mac = reinterpret_cast<const uint8_t *>(mac.data());
+    b.mac_len = mac.size();
+    rc = gdefstor_tree_set_blind(t, 0, "contact", 7, &b);
   }
   GDEFSTOR_RevisionMeta m = Meta();
   if (rc == GDEFSTOR_OK) {
@@ -174,6 +203,7 @@ class Scale : public ::testing::Test {
     ASSERT_EQ(GDEFSTOR_OK, Declare(b.store, "shop.order",
         {Field("number", T, IDX), Field("bucket", T, IDX),
             Field("amount", I, IDX), Field("buyer", R, IDX), Field("note", T),
+            Field("contact", T, PER),
             Group("lines", MUL, {Field("sku", T, IDX), Field("qty", I)})}));
     const int batch = 250;
     for (int from = 0; from < kCusts; from += batch) {
@@ -663,6 +693,93 @@ TEST_F(Scale, AFilteredCountReadsTheAnswer) {
   EXPECT_EQ(uint64_t(g_big->orders / 1000), n);
   ExpectIndexed(c, n, "count of bucket = 'b123'");
   ExpectPlanNames(c, "shop.order", {IndexOf("shop.order", "bucket")});
+}
+
+/* ---- the blind index and the subject lookup (story S5a) ------------------ */
+
+/* "Everything about this person": the subject columns' index finds the ten
+ * orders naming one subject. Only the catalog read (dss_name by role, a
+ * table the size of the schema, not of the data) may scan; every statement
+ * on a group table goes through the subject index. */
+TEST_F(Scale, TheSubjectLookupUsesTheSubjectIndex) {
+  GDEFSTOR_SubjectHits * h = nullptr;
+  std::string who = Subject(7);
+  Cost c = Measure([&]() {
+    ASSERT_EQ(GDEFSTOR_OK, gdefstor_subject_lookup(g_big->store, kTenant, 2,
+        who.data(), who.size(), &h));
+  });
+  uint64_t n = gdefstor_subject_hits_count(h);
+  gdefstor_subject_hits_free(h);
+  EXPECT_EQ(uint64_t(g_big->orders / 1000), n);
+  EXPECT_EQ(0u, c.autoindex) << Describe(c);
+  EXPECT_LE(c.vm, 60 * (n + 1) + 2000) << Describe(c);
+  std::string tno = Column("SELECT tno FROM dss_type WHERE name = 'shop.order'")[0];
+  std::string group = "\"t" + tno + "_g0\"";
+  int read = 0;
+  for (const Rec & r : c.stmts) {
+    if (r.exec || r.sql.find("\"dss_name\"") != std::string::npos) {
+      continue;
+    }
+    EXPECT_EQ(0u, r.fullscan) << "scanned: " << r.sql;
+    if (r.sql.find(group) != std::string::npos) {
+      read++;
+      std::string plan = Plan(r.sql);
+      EXPECT_NE(std::string::npos, plan.find("INDEX t" + tno + "_j0_"))
+          << "the plan does not use the subject index:\n" << plan << r.sql;
+    }
+  }
+  EXPECT_EQ(1, read) << Describe(c);
+}
+
+/* Blind equality: twenty orders share a MAC, found through the blind table's
+ * (fld, mac) index and joined to their current versions by key. */
+TEST_F(Scale, BlindEqualityUsesTheBlindIndex) {
+  Q q;
+  std::string mac = MacFor(42);
+  GDEFSTOR_QueryText text;
+  text.bytes = reinterpret_cast<const uint8_t *>(mac.data());
+  text.len = mac.size();
+  GDEFSTOR_QueryOperand right;
+  std::memset(&right, 0, sizeof right);
+  right.kind = GDEFSTOR_QUERY_CONST;
+  right.texts = &text;
+  right.text_count = 1;
+  GDEFSTOR_Query query = Page(q.Cmp(GDEFSTOR_QUERY_BLIND, q.Field("contact"),
+      right), 50);
+  std::vector<std::string> ids;
+  uint64_t total = 0;
+  Cost c = Measure([&]() {
+    ASSERT_EQ(GDEFSTOR_OK, Ask(g_big->store, "shop.order", query, &ids, &total));
+  });
+  EXPECT_EQ(uint64_t(g_big->orders / 500), total);
+  ExpectIndexed(c, total, "contact blind = MAC 42");
+  std::string tno = Column("SELECT tno FROM dss_type WHERE name = 'shop.order'")[0];
+  ExpectPlanNames(c, "shop.order", {"t" + tno + "_bm"});
+}
+
+/* The history lookup reads the same index, whatever the table's size. */
+TEST_F(Scale, TheHistoryLookupUsesTheBlindIndex) {
+  std::string mac = MacFor(7);
+  GDEFSTOR_BlindHits * h = nullptr;
+  Cost c = Measure([&]() {
+    ASSERT_EQ(GDEFSTOR_OK, gdefstor_blind_history(g_big->store, kTenant, 2,
+        "shop.order", 10, "contact", 7,
+        reinterpret_cast<const uint8_t *>(mac.data()), mac.size(), &h));
+  });
+  uint64_t n = gdefstor_blind_hits_count(h);
+  gdefstor_blind_hits_free(h);
+  EXPECT_EQ(uint64_t(g_big->orders / 500), n);
+  ExpectIndexed(c, n, "the history of MAC 7");
+  std::string tno = Column("SELECT tno FROM dss_type WHERE name = 'shop.order'")[0];
+  int read = 0;
+  for (const Rec & r : c.stmts) {
+    if (!r.exec && r.sql.find("\"t" + tno + "_b\"") != std::string::npos) {
+      read++;
+      EXPECT_NE(std::string::npos, Plan(r.sql).find("INDEX t" + tno + "_bm"))
+          << Plan(r.sql) << r.sql;
+    }
+  }
+  EXPECT_EQ(1, read) << Describe(c);
 }
 
 /* The control: a filter on a field with no index does scan, and the

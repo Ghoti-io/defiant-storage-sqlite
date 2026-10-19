@@ -145,6 +145,14 @@ What the counts show about the SQL layer's shapes on SQLite:
   more.
 - A page of every entity in creation order reads offset plus limit rows; its
   total counts every entity, which is its answer.
+- Blind-index equality is `rid IN (SELECT b.ent FROM tN_b b JOIN tN_cG c ON
+  ... vfrom ... WHERE b.fld = ? AND b.mac = ?)`: the blind table's
+  `(fld, mac)` index drives it and each current version is sought by key. The
+  history lookup reads the same index.
+- The subject lookup ("everything about this person") reads the catalog's
+  list of subject columns (a scan of `dss_name`, whose size is the schema's,
+  not the data's), then each group table through its subject index
+  `tN_jG_C`. Erasure deletes a subject's blind rows through `tN_bs`.
 
 ## 7. What a store opened here does not do
 

@@ -359,6 +359,10 @@ inline GDEFSTOR_Result SF_item(void * ctx, uint64_t row, const GDEFSTOR_ModelIte
  * with their items, as the scan wants, because the dump visits an entity's
  * type's items after its entities: so collect first. */
 struct Collected {
+  struct B {
+    GDEFSTOR_ModelBlind b;
+    std::string subject, mac;
+  };
   struct E {
     GDEFSTOR_ModelEntity e;
     std::string type, pid, creator;
@@ -366,6 +370,7 @@ struct Collected {
     std::vector<std::vector<GDEFSTOR_Value>> vals;
     std::vector<std::vector<std::string>> bytes;
     std::vector<std::vector<std::string>> subjects;
+    std::vector<B> blinds;
   };
   std::map<uint64_t, E> ents;
 };
@@ -402,6 +407,21 @@ inline GDEFSTOR_Result C_item(void * ctx, uint64_t row, const GDEFSTOR_ModelItem
   return GDEFSTOR_OK;
 }
 
+/* Blind rows are truth, not current: they come from the truth dump. */
+inline GDEFSTOR_Result C_blind(void * ctx, uint64_t row, const GDEFSTOR_ModelBlind * b) {
+  Collected * c = (Collected *)ctx;
+  auto it = c->ents.find(row);
+  if (it == c->ents.end()) {
+    return GDEFSTOR_ERR_CORRUPT; /* a blind row of no entity */
+  }
+  Collected::B x;
+  x.b = *b;
+  x.subject.assign((const char *)b->subject, b->subject_len);
+  x.mac.assign((const char *)b->mac, GDEFSTOR_BLIND_MAC_BYTES);
+  it->second.blinds.push_back(x);
+  return GDEFSTOR_OK;
+}
+
 inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
     const GDEFSTOR_ModelVisitor * visitor) {
   ScanCtx * s = (ScanCtx *)ctx;
@@ -415,6 +435,17 @@ inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
       s->tenant_len, GDEFSTOR_MODEL_CURRENT, &v);
   if (rc != GDEFSTOR_OK) {
     return rc;
+  }
+  if (visitor->blind != nullptr) {
+    GDEFSTOR_ModelVisitor bv;
+    std::memset(&bv, 0, sizeof bv);
+    bv.ctx = &col;
+    bv.blind = C_blind;
+    rc = s->tee->inner.dump(s->tee->inner.ctx, s->tenant, s->tenant_len,
+        GDEFSTOR_MODEL_TRUTH, &bv);
+    if (rc != GDEFSTOR_OK) {
+      return rc;
+    }
   }
   std::string want(type, type_len);
   for (auto & kv : col.ents) {
@@ -433,6 +464,12 @@ inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
       }
       x.items[i].values = x.vals[i].data();
       rc = visitor->item(visitor->ctx, x.e.row, &x.items[i]);
+    }
+    for (size_t i = 0; rc == GDEFSTOR_OK && visitor->blind != nullptr &&
+                       i < x.blinds.size(); i++) {
+      x.blinds[i].b.subject = (const uint8_t *)x.blinds[i].subject.data();
+      x.blinds[i].b.mac = (const uint8_t *)x.blinds[i].mac.data();
+      rc = visitor->blind(visitor->ctx, x.e.row, &x.blinds[i].b);
     }
     if (rc != GDEFSTOR_OK) {
       return rc;
