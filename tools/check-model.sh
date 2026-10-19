@@ -75,4 +75,17 @@ plant reader-shares-writer src/model.c testFiles \
     /* A read has a connection of its own: never the writer'"'"'s, which may be
      * in a write that is not committed. */'
 
+# A subject lookup that scans despite the index (story S5a): the subject
+# columns' index step reported done and never run, so "everything about this
+# person" reads every version of the type.
+plant subject-index-dropped src/model.c testScale \
+  'Scale.TheSubjectLookupUsesTheSubjectIndex' \
+  '  int rc = run_plain(c->db, sql, sql_len);' \
+  '  const char * under = sql_len > 28 ? strchr(sql + 28, '"'"'_'"'"') : NULL;
+  int rc = sql_len > 28 &&
+                   memcmp(sql, "CREATE INDEX IF NOT EXISTS \"t", 28) == 0 &&
+                   under != NULL && under[1] == '"'"'j'"'"'
+               ? SQLITE_OK
+               : run_plain(c->db, sql, sql_len);'
+
 plant_finish
