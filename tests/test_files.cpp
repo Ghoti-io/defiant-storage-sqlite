@@ -721,6 +721,29 @@ TEST(ModelFiles, TheStoreServesEntitiesInOneFilePerTenant) {
   EXPECT_EQ("wal", mode[0][0]);
 }
 
+/* A deployment's commits wait for the disk unless the caller says otherwise;
+ * the model suite opens its stores with OFF (test_model.cpp), so nothing but
+ * this test would notice the default weakened. Both settings serve. */
+TEST(ModelFiles, CommitsWaitForTheDiskByDefault) {
+  GDEFSSQLITE_ModelOptions o;
+  gdefssqlite_model_options_default(&o);
+  EXPECT_EQ(GDEFSSQLITE_SYNC_FULL, o.synchronous);
+  for (int sync : {GDEFSSQLITE_SYNC_FULL, GDEFSSQLITE_SYNC_OFF}) {
+    Dir d;
+    ASSERT_FALSE(d.path.empty());
+    Seen seen;
+    GDEFSSQLITE_ModelOptions so = Options(&seen);
+    so.synchronous = sync;
+    GDEFSTOR_Store * store = Open(d, &seen, &so);
+    ASSERT_NE(nullptr, store);
+    ASSERT_EQ(GDEFSTOR_OK, Declare(store, "site.article", Article()));
+    ASSERT_EQ(GDEFSTOR_OK, Put(store, "site.article", "e1", Titled("one"), 0,
+        true));
+    EXPECT_EQ("one", TitleOf(store, "e1")) << "synchronous " << sync;
+    gdefstor_store_destroy(store);
+  }
+}
+
 TEST(ModelFiles, ArgumentsAreChecked) {
   GDEFSTOR_Store * store = nullptr;
   EXPECT_EQ(GDEFSSQLITE_ERR_INVALID, gdefssqlite_model_store_create(nullptr,
@@ -730,6 +753,11 @@ TEST(ModelFiles, ArgumentsAreChecked) {
   GDEFSSQLITE_ModelOptions o;
   gdefssqlite_model_options_default(&o);
   o.size = 1;
+  EXPECT_EQ(GDEFSSQLITE_ERR_INVALID, gdefssqlite_model_store_create("/tmp",
+      &o, nullptr, nullptr, &store));
+  EXPECT_EQ(nullptr, store);
+  gdefssqlite_model_options_default(&o);
+  o.synchronous = 2;
   EXPECT_EQ(GDEFSSQLITE_ERR_INVALID, gdefssqlite_model_store_create("/tmp",
       &o, nullptr, nullptr, &store));
   EXPECT_EQ(nullptr, store);

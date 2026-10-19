@@ -88,4 +88,14 @@ plant subject-index-dropped src/model.c testScale \
                ? SQLITE_OK
                : run_plain(c->db, sql, sql_len);'
 
+# The default weakened (2026-10-19): the model suite runs at OFF for speed, so
+# a deployment's FULL default is held only by its own test.
+plant sync-default-off src/model.c testFiles \
+  'ModelFiles.CommitsWaitForTheDiskByDefault' \
+  '  out->statement_cache = 64;
+}' \
+  '  out->statement_cache = 64;
+  out->synchronous = GDEFSSQLITE_SYNC_OFF;
+}'
+
 plant_finish

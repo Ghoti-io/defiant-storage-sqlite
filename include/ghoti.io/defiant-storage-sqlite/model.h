@@ -114,6 +114,19 @@ typedef void (*GDEFSSQLITE_StatementObserver)(void * ctx,
 typedef void (*GDEFSSQLITE_Refusal)(void * ctx, int result, const char * text,
     size_t len);
 
+/**
+ * How hard each commit waits for the disk (`PRAGMA synchronous`). FULL is
+ * the default and what a deployment uses: a commit that returned survives a
+ * power loss. OFF hands writes to the operating system and returns, which
+ * survives a crashed process but not a crashed machine; it is for tests whose
+ * subject is not durability, where thousands of fresh stores otherwise spend
+ * their time in fsync.
+ */
+typedef enum GDEFSSQLITE_Sync {
+  GDEFSSQLITE_SYNC_FULL = 0, ///< `synchronous=FULL`, the default.
+  GDEFSSQLITE_SYNC_OFF = 1,  ///< `synchronous=OFF`, for tests.
+} GDEFSSQLITE_Sync;
+
 /** How a store or key store is opened. Size-prefixed. */
 typedef struct GDEFSSQLITE_ModelOptions {
   size_t size;                ///< `sizeof(GDEFSSQLITE_ModelOptions)`.
@@ -133,6 +146,9 @@ typedef struct GDEFSSQLITE_ModelOptions {
   /** May be NULL: each refusal is then written as one line to stderr. */
   GDEFSSQLITE_Refusal on_refusal;
   void * on_refusal_ctx;      ///< Passed to @ref on_refusal.
+  /** A ::GDEFSSQLITE_Sync. Default ::GDEFSSQLITE_SYNC_FULL; any other value
+   * is ::GDEFSSQLITE_ERR_INVALID. */
+  int synchronous;
 } GDEFSSQLITE_ModelOptions;
 
 /** @brief Fill @p out with the defaults. NULL is ignored. */

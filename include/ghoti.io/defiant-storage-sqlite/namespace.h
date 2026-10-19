@@ -38,6 +38,7 @@
   GHOTIIO_DEFSSQLITE(GDEFSSQLITE_StatementObserver)
 #define GDEFSSQLITE_Refusal GHOTIIO_DEFSSQLITE(GDEFSSQLITE_Refusal)
 #define GDEFSSQLITE_ModelOptions GHOTIIO_DEFSSQLITE(GDEFSSQLITE_ModelOptions)
+#define GDEFSSQLITE_Sync GHOTIIO_DEFSSQLITE(GDEFSSQLITE_Sync)
 
 #define gdefssqlite_allocator_default                                          \
   GHOTIIO_DEFSSQLITE(gdefssqlite_allocator_default)

@@ -489,7 +489,21 @@ static GDEFSTOR_Result setup(Ex * ex, XConn * c) {
   if (strcmp(got, "wal") != 0) {
     return GDEFSTOR_ERR_IO;
   }
-  rc = run_plain(c->db, "PRAGMA synchronous=FULL", 23);
+  /* Read back, as secure_delete is: SQLite ignores a pragma it cannot apply,
+   * so a store that asked for FULL would otherwise run at whatever it got. */
+  if (ex->opts.synchronous == GDEFSSQLITE_SYNC_OFF) {
+    rc = run_plain(c->db, "PRAGMA synchronous=OFF", 22);
+  } else {
+    rc = run_plain(c->db, "PRAGMA synchronous=FULL", 23);
+  }
+  if (rc == SQLITE_OK) {
+    rc = pragma_text(c->db, "PRAGMA synchronous", got, sizeof got);
+    if (rc == SQLITE_OK &&
+        strcmp(got, ex->opts.synchronous == GDEFSSQLITE_SYNC_OFF ? "0" : "2") !=
+            0) {
+      return GDEFSTOR_ERR_IO;
+    }
+  }
   if (rc == SQLITE_OK && ex->keys) {
     /* A destroyed key's bytes are overwritten, not left in a free page. */
     rc = pragma_text(c->db, "PRAGMA secure_delete=ON", got, sizeof got);
@@ -992,7 +1006,9 @@ static GDEFSSQLITE_Result ex_create(const char * directory, int keys,
   Ex * ex;
   *out = NULL;
   if (directory == NULL || directory[0] == '\0' ||
-      (options != NULL && options->size != sizeof *options)) {
+      (options != NULL && options->size != sizeof *options) ||
+      (options != NULL && options->synchronous != GDEFSSQLITE_SYNC_FULL &&
+          options->synchronous != GDEFSSQLITE_SYNC_OFF)) {
     return GDEFSSQLITE_ERR_INVALID;
   }
   ex = (Ex *)gcu_allocator_calloc(alloc, 1, sizeof *ex);

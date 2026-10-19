@@ -48,7 +48,7 @@ Every connection, after the checks of section 3, runs:
 | Pragma | Why |
 | --- | --- |
 | `journal_mode=WAL` | readers see the last commit while a write is open; a write killed part way leaves frames with no commit, which are not the database |
-| `synchronous=FULL` | a commit is on disk when it returns |
+| `synchronous=FULL` | a commit is on disk when it returns; read back and required. `GDEFSSQLITE_SYNC_OFF` in the options asks for `synchronous=OFF` instead, which survives a crashed process but not a crashed machine; the model test suite uses it, because its allocation-failure tests open thousands of stores and at FULL spent almost all their time in fsync |
 | `secure_delete=ON` (key store only) | a deleted key's bytes, and deleted sealed material's, are zeroed in their page, not left in a free block; read back and required |
 | `query_only=ON` (read connections) | a read connection cannot write |
 

@@ -91,6 +91,11 @@ extern "C" GDEFSTOR_Result ModelOpen(GDEFSTOR_Store ** out,
   GDEFSSQLITE_ModelOptions opts;
   gdefssqlite_model_options_default(&opts);
   opts.on_refusal = Refused;
+  /* The conformance suite's subject is the port, not durability; the files
+   * and crash tests (test_files.cpp) open at the default. Its allocation-
+   * failure tests open a fresh store for every allocation: at FULL the first
+   * took 1,149 s on disk and 35 s on tmpfs (EVO-X2, 2026-10-19). */
+  opts.synchronous = GDEFSSQLITE_SYNC_OFF;
   GDEFSTOR_ModelBackend model;
   GDEFSSQLITE_Result rc = gdefssqlite_model_backend(o.dir.c_str(), &opts,
       alloc, &model);
