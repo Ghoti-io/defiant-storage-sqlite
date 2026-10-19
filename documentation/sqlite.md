@@ -100,9 +100,19 @@ transaction, is closed and never reused (AD-14).
 
 A begin that finds another process writing the tenant waits up to
 `busy_timeout_ms` (default 5 s) while SQLite's busy handler retries, then is
-`GDEFSTOR_ERR_BUSY`. The SQL layer's first write to a tenant creates its six
-tables in a transaction of its own; two processes racing to do it serialise on
-`BEGIN IMMEDIATE`, and the second finds the tables made.
+`GDEFSTOR_ERR_BUSY`. The SQL layer's first write to a tenant creates its
+tenant tables in a transaction of its own; two processes racing to do it
+serialise on `BEGIN IMMEDIATE`, and the second finds the tables made.
+
+Records, counters and the outbox (story S6a) are tenant tables of the same
+file, so they commit in the write with the entities. One writer per file is
+what makes the counter and the outbox exact across processes: every write
+begins with `BEGIN IMMEDIATE` and sets the SQL layer's savepoint, and an abort
+that took a counter value rolls back to it and commits the counter's floor
+while the write lock is still held, so no other process takes that value; a
+claim is a write, so two processes never hold live leases on one stream at
+once. `tests/test_system.cpp` shows both with two stores on one file, a thread
+each, and that a skipped value stays skipped when the file is opened again.
 
 Indexes are built after the step that declares them commits, never inside it
 (AD-15; defiant-storage-sql's `sql.md`, section 3): on the write connection,
