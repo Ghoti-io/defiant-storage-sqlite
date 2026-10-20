@@ -374,6 +374,10 @@ struct Collected {
     std::vector<std::vector<std::string>> bytes;
     std::vector<std::vector<std::string>> subjects;
     std::vector<B> blinds;
+    /* The newest revision, when the scan is asked for it. */
+    bool have_rev = false;
+    GDEFSTOR_ModelRevision rev;
+    std::string who, why, rlangs;
   };
   std::map<uint64_t, E> ents;
 };
@@ -427,6 +431,27 @@ inline GDEFSTOR_Result C_blind(void * ctx, uint64_t row, const GDEFSTOR_ModelBli
   return GDEFSTOR_OK;
 }
 
+/* Revisions are truth: the newest of each entity, from the truth dump. */
+inline GDEFSTOR_Result C_revision(void * ctx, uint64_t row,
+    const GDEFSTOR_ModelRevision * r) {
+  Collected * c = (Collected *)ctx;
+  auto it = c->ents.find(row);
+  if (it == c->ents.end()) {
+    return GDEFSTOR_ERR_CORRUPT; /* a revision of no entity */
+  }
+  Collected::E & x = it->second;
+  if (x.have_rev && r->revision < x.rev.revision) {
+    return GDEFSTOR_OK;
+  }
+  x.have_rev = true;
+  x.rev = *r;
+  x.who.assign(r->who == nullptr ? "" : r->who, r->who_len);
+  x.why.assign(r->why == nullptr ? "" : r->why, r->why_len);
+  x.rlangs.assign(r->languages == nullptr ? "" : r->languages,
+      r->languages_len);
+  return GDEFSTOR_OK;
+}
+
 inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
     const GDEFSTOR_ModelVisitor * visitor) {
   ScanCtx * s = (ScanCtx *)ctx;
@@ -441,11 +466,12 @@ inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
   if (rc != GDEFSTOR_OK) {
     return rc;
   }
-  if (visitor->blind != nullptr) {
+  if (visitor->blind != nullptr || visitor->revision != nullptr) {
     GDEFSTOR_ModelVisitor bv;
     std::memset(&bv, 0, sizeof bv);
     bv.ctx = &col;
-    bv.blind = C_blind;
+    bv.blind = visitor->blind != nullptr ? C_blind : nullptr;
+    bv.revision = visitor->revision != nullptr ? C_revision : nullptr;
     rc = s->tee->inner.dump(s->tee->inner.ctx, s->tenant, s->tenant_len,
         GDEFSTOR_MODEL_TRUTH, &bv);
     if (rc != GDEFSTOR_OK) {
@@ -477,6 +503,12 @@ inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
       x.blinds[i].b.mac = (const uint8_t *)x.blinds[i].mac.data();
       x.blinds[i].b.language = x.blinds[i].lang.data();
       rc = visitor->blind(visitor->ctx, x.e.row, &x.blinds[i].b);
+    }
+    if (rc == GDEFSTOR_OK && visitor->revision != nullptr && x.have_rev) {
+      x.rev.who = x.who.data();
+      x.rev.why = x.why.data();
+      x.rev.languages = x.rlangs.data();
+      rc = visitor->revision(visitor->ctx, x.e.row, &x.rev);
     }
     if (rc != GDEFSTOR_OK) {
       return rc;
