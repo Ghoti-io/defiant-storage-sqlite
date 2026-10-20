@@ -174,7 +174,19 @@ What the counts show about the SQL layer's shapes on SQLite:
   not the data's), then each group table through its subject index
   `tN_jG_C`. Erasure deletes a subject's blind rows through `tN_bs`.
 
-## 7. What a store opened here does not do
+## 7. Snapshots
+
+A tenant's snapshot (`defiant-storage/snapshot.h`, `defiant-snapshot/2`) is a
+logical export read through the port, never a copy of these files, so one
+taken here imports into memory or Postgres and back. Importing writes through
+the restore members `defiant-storage-sql` gives every SQL backend: the
+revisions keep their commit sequences, the counters their values and the
+outbox rows their leases, failures and parked flags, and the current tables
+are rebuilt as the revisions are written. `testAgree` carries a snapshot from
+memory to a store here, reopens the files, and carries it back, the truth
+byte-identical at each step and every export the same bytes.
+
+## 8. What a store opened here does not do
 
 `gdefssqlite_model_store_create()` serves the entity port only. The key/bytes
 rows of `store.h` and the files built on it (records, blobs, the outbox) have

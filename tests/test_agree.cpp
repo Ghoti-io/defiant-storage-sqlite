@@ -27,7 +27,9 @@
  * same SQLite rows (the tee), and must equal the memory backend's answer, page
  * order and total included. The sweep requires that it met the cases that
  * tell engines apart. Seeded sequences of record, counter and outbox calls
- * (story S6a) are made alike on both, and every answer must match.
+ * (story S6a) are made alike on both, and every answer must match. A
+ * tenant's snapshot (story S6a3) travels from memory to SQLite and back,
+ * every truth row unchanged at each step.
  */
 
 #include <gtest/gtest.h>
@@ -36,12 +38,14 @@
 #include <ghoti.io/defiant-storage-sqlite/defiant-storage-sqlite.h>
 
 #include "query_gen.h"
+#include "snapshot_fixture.inc"
 #include "tmpdir.h"
 
 #include <sqlite3.h>
 
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -478,6 +482,73 @@ TEST(Agreement, RecordsCountersAndTheOutboxAgreeWithTheMemoryBackend) {
   }
   EXPECT_GE(claimed, 30);
   EXPECT_GE(aborts, 10);
+}
+
+/* One tenant's snapshot from memory into SQLite, from SQLite (reopened from
+ * its files) into a second memory store: the truth dump is byte-identical
+ * at every step, the current tables are rebuilt alike, and every step
+ * exports the same bytes. Once for the fixture of every kind of truth, and
+ * once for each of three seeded random populations. */
+void TravelsAndComesBack(const std::function<GDEFSTOR_Result(GDEFSTOR_Store *)> &
+                             fill,
+    const std::string & what) {
+  GDEFSTOR_Store * mem = nullptr;
+  ASSERT_EQ(GDEFSMEMORY_OK, gdefsmemory_store_create(nullptr, nullptr, &mem));
+  ASSERT_EQ(GDEFSTOR_OK, fill(mem)) << what;
+  std::string truth = snapshot_fixture::Dump(mem, kTenant, GDEFSTOR_MODEL_TRUTH);
+  std::string current =
+      snapshot_fixture::Dump(mem, kTenant, GDEFSTOR_MODEL_CURRENT);
+  ASSERT_FALSE(truth.empty()) << what;
+  std::string zip = snapshot_fixture::Export(mem, kTenant);
+  ASSERT_FALSE(zip.empty()) << what;
+  gdefstor_store_destroy(mem);
+  Sqlite sq;
+  OpenSqlite(sq, 0);
+  ASSERT_NE(nullptr, sq.store);
+  std::string why;
+  ASSERT_EQ(GDEFSTOR_OK, snapshot_fixture::Import(sq.store, kTenant, zip, &why))
+      << what << ": " << why;
+  EXPECT_EQ(truth, snapshot_fixture::Dump(sq.store, kTenant,
+                       GDEFSTOR_MODEL_TRUTH))
+      << what << ": memory to SQLite";
+  EXPECT_EQ(current, snapshot_fixture::Dump(sq.store, kTenant,
+                         GDEFSTOR_MODEL_CURRENT))
+      << what;
+  /* What SQLite holds is in its files, not in the store that wrote it. */
+  gdefstor_store_destroy(sq.store);
+  sq.store = nullptr;
+  OpenSqlite(sq, 0);
+  ASSERT_NE(nullptr, sq.store);
+  EXPECT_EQ(truth, snapshot_fixture::Dump(sq.store, kTenant,
+                       GDEFSTOR_MODEL_TRUTH))
+      << what << ": SQLite reopened";
+  std::string from_lite = snapshot_fixture::Export(sq.store, kTenant);
+  EXPECT_EQ(zip, from_lite) << what;
+  GDEFSTOR_Store * back = nullptr;
+  ASSERT_EQ(GDEFSMEMORY_OK, gdefsmemory_store_create(nullptr, nullptr, &back));
+  ASSERT_EQ(GDEFSTOR_OK,
+      snapshot_fixture::Import(back, kTenant, from_lite, &why))
+      << what << ": " << why;
+  EXPECT_EQ(truth, snapshot_fixture::Dump(back, kTenant, GDEFSTOR_MODEL_TRUTH))
+      << what << ": SQLite to memory";
+  EXPECT_EQ(current, snapshot_fixture::Dump(back, kTenant,
+                         GDEFSTOR_MODEL_CURRENT))
+      << what;
+  EXPECT_EQ(zip, snapshot_fixture::Export(back, kTenant)) << what;
+  gdefstor_store_destroy(back);
+}
+
+TEST(Agreement, ASnapshotTravelsFromMemoryToSqliteAndBackUnchanged) {
+  TravelsAndComesBack([](GDEFSTOR_Store * s) {
+    return snapshot_fixture::Populate(s, kTenant, false);
+  }, "the fixture");
+  for (uint32_t seed = 1; seed <= 3 && !HasFailure(); seed++) {
+    TravelsAndComesBack([seed](GDEFSTOR_Store * s) {
+      qgen::Gen g(seed);
+      g.norders = 10 + g.Pick(20);
+      return g.Populate(s);
+    }, "seed " + std::to_string(seed));
+  }
 }
 
 }  // namespace
