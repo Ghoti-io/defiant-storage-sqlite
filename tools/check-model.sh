@@ -98,4 +98,30 @@ plant sync-default-off src/model.c testFiles \
   out->synchronous = GDEFSSQLITE_SYNC_OFF;
 }'
 
+# The index without the language column (story S6a2): every field index is
+# built as if the language were not its first column, so a filter in one
+# language reads the entries of all three to find its own. Seen at scale: a
+# value common to two languages costs 20,000 index entries to rule out in
+# the third.
+plant index-without-language src/model.c testScale \
+  'Scale.AFieldQueryInOneLanguageReadsOnlyItsLanguage' \
+  '  int rc = run_plain(c->db, sql, sql_len);' \
+  '  char fixed[1024];
+  size_t at = 0;
+  int rc;
+  if (sql_len > 27 && sql_len < sizeof fixed &&
+      memcmp(sql, "CREATE INDEX IF NOT EXISTS ", 27) == 0) {
+    while (at + 14 <= sql_len &&
+           memcmp(sql + at, "\"lang\", \"ent\")", 14) != 0) {
+      at++;
+    }
+  }
+  if (at > 0 && at + 14 <= sql_len) {
+    memcpy(fixed, sql, at);
+    memcpy(fixed + at, sql + at + 8, sql_len - at - 8);
+    rc = run_plain(c->db, fixed, sql_len - 8);
+  } else {
+    rc = run_plain(c->db, sql, sql_len);
+  }'
+
 plant_finish

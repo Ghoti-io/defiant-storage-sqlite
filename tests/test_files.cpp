@@ -203,7 +203,7 @@ std::string TitleOf(GDEFSTOR_Store * store, const char * pid,
     GDEFSTOR_Result * rc_out = nullptr) {
   GDEFSTOR_Tree * t = nullptr;
   GDEFSTOR_Result rc = gdefstor_entity_tree(store, kTenant, 2, pid,
-      std::strlen(pid), 0, &t);
+      std::strlen(pid), "en", 2, 0, &t);
   if (rc_out != nullptr) {
     *rc_out = rc;
   }
@@ -233,7 +233,8 @@ GDEFSTOR_Result CountTitled(GDEFSTOR_Store * store, const std::string & title,
   n.right.kind = GDEFSTOR_QUERY_VALUES;
   n.right.values = &v;
   n.right.value_count = 1;
-  return gdefstor_entity_count(store, kTenant, 2, "site.article", 12, &n, out);
+  return gdefstor_entity_count(store, kTenant, 2, "site.article", 12, "en", 2,
+      &n, out);
 }
 
 /* ---- old and newer files --------------------------------------------------- */
@@ -335,7 +336,7 @@ TEST(ModelFiles, ANewerLayoutIsRefusedAndLeftAsItIs) {
   }
   {
     Raw raw(d.At(kFile));
-    raw.Exec("UPDATE dss_schema SET version = 2");
+    raw.Exec("UPDATE dss_schema SET version = version + 1");
   }
   ASSERT_FALSE(std::filesystem::exists(d.At(std::string(kFile) + "-wal")));
   const std::string before = ReadAll(d.At(kFile));
@@ -439,7 +440,8 @@ TEST(ModelFiles, EveryTableAndIndexIsARecordedStep) {
   }
   EXPECT_EQ(recorded, in_file);
   /* Each group table's and current table's columns past the fixed ones. */
-  std::set<std::string> fixed = {"ent", "item", "vfrom", "vto", "parent", "ord"};
+  std::set<std::string> fixed = {"ent", "lang", "item", "vfrom", "vto",
+      "parent", "ord"};
   int checked = 0;
   for (const std::string & table : in_file) {
     size_t u = table.find('_');
@@ -482,7 +484,8 @@ TEST(ModelConcurrency, ReadersUseTheirOwnConnections) {
   ASSERT_EQ(GDEFSTOR_OK, Fill(t, 0, Titled("two")));
   GDEFSTOR_RevisionMeta m = Meta();
   seen.phase = "write";
-  ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_save(w, "e1", 2, 1, &m, t, nullptr));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_save(w, "e1", 2, 1, &m, "en", 2, t,
+      nullptr));
   gdefstor_tree_free(t);
 
   seen.phase = "read";
@@ -602,7 +605,8 @@ TEST(ModelCrash, AWriteKilledPartWayLeavesThePreviousRevision) {
     gdefstor_tree_create(nullptr, &t);
     Fill(t, 0, Titled("two"));
     GDEFSTOR_RevisionMeta m = Meta();
-    if (gdefstor_entity_save(w, "e1", 2, 1, &m, t, nullptr) != GDEFSTOR_OK) {
+    if (gdefstor_entity_save(w, "e1", 2, 1, &m, "en", 2, t, nullptr) !=
+        GDEFSTOR_OK) {
       _exit(5);
     }
     /* Enough more that pages spill into the WAL before any commit. */
@@ -623,7 +627,7 @@ TEST(ModelCrash, AWriteKilledPartWayLeavesThePreviousRevision) {
   EXPECT_EQ("one", TitleOf(store, "e1"));
   GDEFSTOR_History * h = nullptr;
   ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_history(store, kTenant, 2, "e1", 2,
-      &h));
+      nullptr, 0, &h));
   EXPECT_EQ(1u, gdefstor_history_revision_count(h));
   gdefstor_history_free(h);
   GDEFSTOR_Entity * e = nullptr;

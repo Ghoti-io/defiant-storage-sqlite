@@ -262,7 +262,8 @@ inline GDEFSTOR_RevisionMeta Meta() {
 inline GDEFSTOR_Result Put(GDEFSTOR_Store * store, const std::string & type,
     const std::string & pid, const Node & tree, uint64_t base, bool create,
     uint64_t * out_rev = nullptr, const std::string & creator = "",
-    int64_t created = 5, const char * tenant = kTenant) {
+    int64_t created = 5, const char * tenant = kTenant,
+    const char * lang = "en") {
   return InWrite(store, [&](GDEFSTOR_Write * w) {
     GDEFSTOR_Result rc = GDEFSTOR_OK;
     if (create) {
@@ -279,7 +280,8 @@ inline GDEFSTOR_Result Put(GDEFSTOR_Store * store, const std::string & type,
     }
     GDEFSTOR_RevisionMeta m = Meta();
     if (rc == GDEFSTOR_OK) {
-      rc = gdefstor_entity_save(w, pid.data(), pid.size(), base, &m, t, out_rev);
+      rc = gdefstor_entity_save(w, pid.data(), pid.size(), base, &m, lang,
+          std::strlen(lang), t, out_rev);
     }
     gdefstor_tree_free(t);
     return rc;
@@ -361,12 +363,13 @@ inline GDEFSTOR_Result SF_item(void * ctx, uint64_t row, const GDEFSTOR_ModelIte
 struct Collected {
   struct B {
     GDEFSTOR_ModelBlind b;
-    std::string subject, mac;
+    std::string subject, mac, lang;
   };
   struct E {
     GDEFSTOR_ModelEntity e;
     std::string type, pid, creator;
     std::vector<GDEFSTOR_ModelItem> items;
+    std::vector<std::string> langs;
     std::vector<std::vector<GDEFSTOR_Value>> vals;
     std::vector<std::vector<std::string>> bytes;
     std::vector<std::vector<std::string>> subjects;
@@ -389,6 +392,7 @@ inline GDEFSTOR_Result C_item(void * ctx, uint64_t row, const GDEFSTOR_ModelItem
   Collected * c = (Collected *)ctx;
   Collected::E & x = c->ents[row];
   x.items.push_back(*i);
+  x.langs.push_back(std::string(i->language, i->language_len));
   std::vector<GDEFSTOR_Value> v(i->values, i->values + i->value_count);
   /* Copies of what the dump lends: bytes and subjects both, since the
    * lent ones are gone once the dump returns. */
@@ -418,6 +422,7 @@ inline GDEFSTOR_Result C_blind(void * ctx, uint64_t row, const GDEFSTOR_ModelBli
   x.b = *b;
   x.subject.assign((const char *)b->subject, b->subject_len);
   x.mac.assign((const char *)b->mac, GDEFSTOR_BLIND_MAC_BYTES);
+  x.lang.assign(b->language, b->language_len);
   it->second.blinds.push_back(x);
   return GDEFSTOR_OK;
 }
@@ -463,12 +468,14 @@ inline GDEFSTOR_Result TeeScan(void * ctx, const char * type, size_t type_len,
         x.vals[i][k].subject = (const uint8_t *)x.subjects[i][k].data();
       }
       x.items[i].values = x.vals[i].data();
+      x.items[i].language = x.langs[i].data();
       rc = visitor->item(visitor->ctx, x.e.row, &x.items[i]);
     }
     for (size_t i = 0; rc == GDEFSTOR_OK && visitor->blind != nullptr &&
                        i < x.blinds.size(); i++) {
       x.blinds[i].b.subject = (const uint8_t *)x.blinds[i].subject.data();
       x.blinds[i].b.mac = (const uint8_t *)x.blinds[i].mac.data();
+      x.blinds[i].b.language = x.blinds[i].lang.data();
       rc = visitor->blind(visitor->ctx, x.e.row, &x.blinds[i].b);
     }
     if (rc != GDEFSTOR_OK) {
@@ -548,8 +555,8 @@ TEE_FWD(apply, GDEFSTOR_Result, (void * ctx, void * x,
 TEE_FWD(history, GDEFSTOR_Result, (void * ctx, void * x, const char * a,
     size_t b, uint64_t r, const GDEFSTOR_ModelVisitor * v), (t->inner.ctx, x, a, b, r, v))
 TEE_FWD(items, GDEFSTOR_Result, (void * ctx, void * x, const char * a,
-    size_t b, uint64_t r, uint64_t o, const GDEFSTOR_ModelVisitor * v),
-    (t->inner.ctx, x, a, b, r, o, v))
+    size_t b, uint64_t r, uint64_t o, const char * l, size_t ll,
+    const GDEFSTOR_ModelVisitor * v), (t->inner.ctx, x, a, b, r, o, l, ll, v))
 TEE_FWD(draft_put, GDEFSTOR_Result, (void * ctx, void * x,
     const GDEFSTOR_ModelDraft * d), (t->inner.ctx, x, d))
 TEE_FWD(draft_get, GDEFSTOR_Result, (void * ctx, void * x, const char * a,

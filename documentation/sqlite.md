@@ -145,10 +145,20 @@ takes no full-scan step and a number of steps set by its answer, and run
 What the counts show about the SQL layer's shapes on SQLite:
 
 - A filter on an indexed field is `rid IN (SELECT ent FROM <current table>
-  WHERE v = ?)`; SQLite runs the subquery on the index `(v, ent)` and seeks
-  each entity by its row.
-- A sort by a field joins the root current table with `LEFT JOIN`, so that an
-  entity with no value sorts first. With a filter that an index serves, the
+  WHERE lang = ? AND v = ?)`; SQLite runs the subquery on the index
+  `(v, lang, ent)`, searching `(v=? AND lang=?)`, and seeks each entity by
+  its row. A query reads one language (story S6a2), so an equality reads that
+  language's index entries only: at 10,000 entities in three languages, a
+  value the other two languages share with every entity costs nothing to rule
+  out in the third (`Scale.AFieldQueryInOneLanguageReadsOnlyItsLanguage`). A
+  range reads the entries in its range of every language. The index does not
+  lead with the language: one that did offered the sort's join
+  (`ent = ? AND lang = ?`) a covering search on the language alone, which
+  SQLite chose over the key, reading a whole language per entity sorted
+  (measured: 2.5 million steps for a page of 20).
+- A sort by a field joins the root current table with `LEFT JOIN ... AND
+  lang = ?`, so that an entity with no value, or no tree in the language,
+  sorts first. With a filter that an index serves, the
   sort is of the answer. Without one, the sorted page of a whole type reads
   every entity of the type once (the `LEFT JOIN` and the absent-first order
   keep the index from giving the order), bounded by the type's entities, not

@@ -31,6 +31,10 @@
  * statement names the index the field's declaration made. Creating one more
  * entity, reading one, listing a page and counting are bounded the same way.
  *
+ * Every order has a tree in three languages (en, fr, de; story S6a2) and
+ * every query binds one, so each of these shapes is also a measurement of a
+ * query in one language over a table that holds three.
+ *
  * GDEFSSQLITE_SCALE_ORDERS in the environment sets another size, for looking
  * at plans by hand; the bounds below do not depend on it.
  * GDEFSSQLITE_SCALE_VERBOSE prints each measured call.
@@ -133,10 +137,12 @@ Big * g_big = nullptr;
 
 /* An order: number N.. (unique), bucket b000..b999 (ten orders each),
  * amount = i, the buyer c0000..c0999 (ten orders each), a note nothing
- * indexes, and one line whose sku is one of 2,000 (five orders each). */
+ * indexes, one line whose sku is one of 2,000 (five orders each), and a
+ * title that is "common" in en (and de, below). */
 Node Order(int i) {
   Node n;
   n.Set("number", Txt(Id('N', i, 5)));
+  n.Set("title", Txt("common"));
   n.Set("bucket", Txt(Id('b', i % 1000, 3)));
   n.Set("amount", Num(I, i));
   n.Set("buyer", Ref(Id('c', i % kCusts, 4)));
@@ -148,6 +154,18 @@ Node Order(int i) {
   return n;
 }
 
+/* The order's tree in fr or de: the same, without the personal contact (its
+ * blind rows and subject stay the en tree's alone), and a title that is the
+ * order's own in fr, f00000..f09999, and "common" in de. */
+Node Translated(int i, char lang) {
+  Node n = Order(i);
+  n.vals.erase("contact");
+  if (lang == 'f') {
+    n.Set("title", Txt(Id('f', i, 5)));
+  }
+  return n;
+}
+
 Node Cust(int i) {
   Node n;
   n.Set("region", Txt(Id('r', i % 100, 2)));
@@ -155,8 +173,11 @@ Node Cust(int i) {
   return n;
 }
 
+/* Create @p pid and save @p tree in en and, given, @p fr and @p de, in one
+ * revision. */
 GDEFSTOR_Result SaveNew(GDEFSTOR_Write * w, const char * type,
-    const std::string & pid, const Node & tree) {
+    const std::string & pid, const Node & tree, const Node * fr = nullptr,
+    const Node * de = nullptr) {
   GDEFSTOR_Result rc = gdefstor_entity_create(w, type, std::strlen(type),
       pid.data(), pid.size(), "", 0, 1, nullptr);
   GDEFSTOR_Tree * t = nullptr;
@@ -178,11 +199,36 @@ GDEFSTOR_Result SaveNew(GDEFSTOR_Write * w, const char * type,
     b.mac_len = mac.size();
     rc = gdefstor_tree_set_blind(t, 0, "contact", 7, &b);
   }
+  GDEFSTOR_Tree * more[2] = {nullptr, nullptr};
+  GDEFSTOR_LanguageTree lt[3];
+  size_t nl = 0;
+  std::memset(lt, 0, sizeof lt);
+  lt[nl].size = sizeof lt[nl];
+  lt[nl].language = "en";
+  lt[nl].language_len = 2;
+  lt[nl++].tree = t;
+  for (int k = 0; rc == GDEFSTOR_OK && k < 2; k++) {
+    const Node * n = k == 0 ? fr : de;
+    if (n == nullptr) {
+      continue;
+    }
+    rc = gdefstor_tree_create(nullptr, &more[k]);
+    if (rc == GDEFSTOR_OK) {
+      rc = Fill(more[k], 0, *n);
+    }
+    lt[nl].size = sizeof lt[nl];
+    lt[nl].language = k == 0 ? "fr" : "de";
+    lt[nl].language_len = 2;
+    lt[nl++].tree = more[k];
+  }
   GDEFSTOR_RevisionMeta m = Meta();
   if (rc == GDEFSTOR_OK) {
-    rc = gdefstor_entity_save(w, pid.data(), pid.size(), 0, &m, t, nullptr);
+    rc = gdefstor_entity_save_languages(w, pid.data(), pid.size(), 0, &m, lt,
+        nl, nullptr);
   }
   gdefstor_tree_free(t);
+  gdefstor_tree_free(more[0]);
+  gdefstor_tree_free(more[1]);
   return rc;
 }
 
@@ -201,8 +247,8 @@ class Scale : public ::testing::Test {
     ASSERT_EQ(GDEFSTOR_OK, Declare(b.store, "shop.cust",
         {Field("region", T, IDX), Field("name", T)}));
     ASSERT_EQ(GDEFSTOR_OK, Declare(b.store, "shop.order",
-        {Field("number", T, IDX), Field("bucket", T, IDX),
-            Field("amount", I, IDX), Field("buyer", R, IDX), Field("note", T),
+        {Field("number", T, IDX), Field("title", T, IDX),
+            Field("bucket", T, IDX), Field("amount", I, IDX), Field("buyer", R, IDX), Field("note", T),
             Field("contact", T, PER),
             Group("lines", MUL, {Field("sku", T, IDX), Field("qty", I)})}));
     const int batch = 250;
@@ -221,7 +267,9 @@ class Scale : public ::testing::Test {
         GDEFSTOR_Result rc = GDEFSTOR_OK;
         for (int i = from; rc == GDEFSTOR_OK && i < from + batch && i < b.orders;
              i++) {
-          rc = SaveNew(w, "shop.order", Id('o', i, 5), Order(i));
+          Node fr = Translated(i, 'f');
+          Node de = Translated(i, 'd');
+          rc = SaveNew(w, "shop.order", Id('o', i, 5), Order(i), &fr, &de);
         }
         return rc;
       }));
@@ -456,10 +504,13 @@ struct Q {
   }
 };
 
-GDEFSTOR_Query Page(const GDEFSTOR_QueryNode * where, uint64_t limit = 20) {
+GDEFSTOR_Query Page(const GDEFSTOR_QueryNode * where, uint64_t limit = 20,
+    const char * lang = "en") {
   GDEFSTOR_Query q;
   std::memset(&q, 0, sizeof q);
   q.size = sizeof q;
+  q.language = lang;
+  q.language_len = std::strlen(lang);
   q.where = where;
   q.limit = limit;
   return q;
@@ -613,7 +664,7 @@ TEST_F(Scale, ReadingOneEntityTakesNoScan) {
     gdefstor_entity_free(e);
     GDEFSTOR_Tree * t = nullptr;
     ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_tree(g_big->store, kTenant, 2,
-        pid.data(), pid.size(), 0, &t));
+        pid.data(), pid.size(), "en", 2, 0, &t));
     gdefstor_tree_free(t);
   });
   ExpectIndexed(c, 1, "reading one entity");
@@ -673,7 +724,7 @@ TEST_F(Scale, AListPageReadsThePageAndTheCountReadsTheAnswer) {
   uint64_t n = 0;
   Cost count = Measure([&]() {
     ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_count(g_big->store, kTenant, 2,
-        "shop.order", 10, nullptr, &n));
+        "shop.order", 10, "en", 2, nullptr, &n));
   });
   EXPECT_GE(n, (uint64_t)g_big->orders);
   EXPECT_LE(count.vm, 60 * (n + 1) + 6000) << Describe(count);
@@ -688,11 +739,74 @@ TEST_F(Scale, AFilteredCountReadsTheAnswer) {
       q.Values({Txt("b123")}));
   Cost c = Measure([&]() {
     ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_count(g_big->store, kTenant, 2,
-        "shop.order", 10, where, &n));
+        "shop.order", 10, "en", 2, where, &n));
   });
   EXPECT_EQ(uint64_t(g_big->orders / 1000), n);
   ExpectIndexed(c, n, "count of bucket = 'b123'");
   ExpectPlanNames(c, "shop.order", {IndexOf("shop.order", "bucket")});
+}
+
+/* ---- one language of three (story S6a2) --------------------------------- */
+
+/* A query binds one language, and a field's index is (value, language,
+ * entity), so an equality reads its language's entries and never the
+ * others'. "title" is "common" in en and de for every order and the order's
+ * own in fr: in fr, "common" matches nothing, and an index without the
+ * language would read the 20,000 entries of the other two to learn that; in
+ * fr, one order's title is one entry. The plan's search names the language
+ * beside the value. */
+TEST_F(Scale, AFieldQueryInOneLanguageReadsOnlyItsLanguage) {
+  const std::string ix = IndexOf("shop.order", "title");
+  {
+    Q q;
+    GDEFSTOR_Query query = Page(q.Cmp(GDEFSTOR_QUERY_EQ, q.Field("title"),
+        q.Values({Txt("common")})), 20, "fr");
+    std::vector<std::string> ids;
+    uint64_t total = 9;
+    Cost c = Measure([&]() {
+      ASSERT_EQ(GDEFSTOR_OK, Ask(g_big->store, "shop.order", query, &ids,
+          &total));
+    });
+    EXPECT_EQ(0u, total);
+    ExpectIndexed(c, 0, "title = 'common' in fr");
+    ExpectPlanNames(c, "shop.order", {ix});
+    for (const std::string & sql : Compiled(c, "shop.order")) {
+      std::string plan = Plan(sql);
+      EXPECT_NE(std::string::npos, plan.find(ix + " (v"))
+          << "the plan does not search the title index:\n" << plan << sql;
+      EXPECT_NE(std::string::npos, plan.find("=? AND lang=?)"))
+          << "the search does not name the language:\n" << plan << sql;
+    }
+  }
+  {
+    Q q;
+    GDEFSTOR_Query query = Page(q.Cmp(GDEFSTOR_QUERY_EQ, q.Field("title"),
+        q.Values({Txt(Id('f', 42, 5))})), 20, "fr");
+    std::vector<std::string> ids;
+    uint64_t total = 0;
+    Cost c = Measure([&]() {
+      ASSERT_EQ(GDEFSTOR_OK, Ask(g_big->store, "shop.order", query, &ids,
+          &total));
+    });
+    EXPECT_EQ(1u, total);
+    ASSERT_EQ(1u, ids.size());
+    EXPECT_EQ(Id('o', 42, 5), ids[0]);
+    ExpectIndexed(c, 1, "title = 'f00042' in fr");
+  }
+  {
+    /* The same bucket in de as in en: the same ten orders, by the index. */
+    Q q;
+    GDEFSTOR_Query query = Page(q.Cmp(GDEFSTOR_QUERY_EQ, q.Field("bucket"),
+        q.Values({Txt("b007")})), 20, "de");
+    std::vector<std::string> ids;
+    uint64_t total = 0;
+    Cost c = Measure([&]() {
+      ASSERT_EQ(GDEFSTOR_OK, Ask(g_big->store, "shop.order", query, &ids,
+          &total));
+    });
+    EXPECT_EQ(uint64_t(g_big->orders / 1000), total);
+    ExpectIndexed(c, total, "bucket = 'b007' in de");
+  }
 }
 
 /* ---- the blind index and the subject lookup (story S5a) ------------------ */

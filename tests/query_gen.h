@@ -88,10 +88,13 @@ inline const std::vector<Leaf> & Leaves() {
 
 struct Gen {
   std::mt19937 rng;
+  /* Every choice of language (story S6a2) is drawn from this one, so that
+   * adding languages left every other draw of rng where it was. */
+  std::mt19937 lang_rng;
   bool distinct = false; /* constants unlike any stored value, for binding */
   int norders = 12;
   int ncusts = 6;
-  explicit Gen(uint32_t seed) : rng(seed) {}
+  explicit Gen(uint32_t seed) : rng(seed), lang_rng(seed + 0x5a2u) {}
   int Pick(int n) {
     return (int)(rng() % (uint32_t)n);
   }
@@ -238,14 +241,50 @@ struct Gen {
       if (rc == GDEFSTOR_OK && !Chance(3)) {
         rc = State(store, OrderId(i), Pick(2), Chance(4));
       }
+      if (rc == GDEFSTOR_OK) {
+        rc = Translate(store, "shop.order", OrderId(i), true);
+      }
     }
     for (int i = 1; rc == GDEFSTOR_OK && i <= ncusts; i++) {
       rc = Put(store, "shop.cust", CustId(i), CustTree(), 0, true);
       if (rc == GDEFSTOR_OK && Chance(2)) {
         rc = State(store, CustId(i), 1, 0);
       }
+      if (rc == GDEFSTOR_OK) {
+        rc = Translate(store, "shop.cust", CustId(i), false);
+      }
     }
     return rc;
+  }
+
+  /* Perhaps a tree in "fr" too, from lang_rng's draws: in a revision of its
+   * own, so the entity's "en" and "fr" values differ and a query in one
+   * language that read the other would answer differently. "de" is never
+   * written: a query in it finds every entity with no tree. */
+  GDEFSTOR_Result Translate(GDEFSTOR_Store * store, const char * type,
+      const std::string & pid, bool order) {
+    GDEFSTOR_Entity * e = nullptr;
+    GDEFSTOR_EntityInfo info;
+    if (lang_rng() % 2 != 0) {
+      return GDEFSTOR_OK;
+    }
+    GDEFSTOR_Result rc = gdefstor_entity_get(store, kTenant, 2, pid.data(),
+        pid.size(), &e);
+    if (rc != GDEFSTOR_OK) {
+      return rc;
+    }
+    std::memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    gdefstor_entity_info(e, &info);
+    gdefstor_entity_free(e);
+    if (info.revision == 0) {
+      return GDEFSTOR_OK;
+    }
+    std::swap(rng, lang_rng);
+    Node t = order ? OrderTree() : CustTree();
+    std::swap(rng, lang_rng);
+    return Put(store, type, pid, t, info.revision, false, nullptr, "", 5,
+        kTenant, "fr");
   }
 
   /* ---- queries ----------------------------------------------------------- */
@@ -478,6 +517,10 @@ struct Gen {
   void Make(Built & b, const char * type_name) {
     std::memset(&b.q, 0, sizeof b.q);
     b.q.size = sizeof b.q;
+    /* One language per query, "en" most often (every entity has it). */
+    static const char * const langs[] = {"en", "en", "fr", "de"};
+    b.q.language = langs[lang_rng() % 4];
+    b.q.language_len = 2;
     b.q.where = Chance(8) ? nullptr : Pred(b, type_name, 0, false);
     int nsorts = Pick(4);
     for (int k = 0; k < nsorts; k++) {

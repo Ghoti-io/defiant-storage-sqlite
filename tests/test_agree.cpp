@@ -63,6 +63,8 @@ struct Seen {
   int nots = 0;
   int field_field = 0;
   int outer = 0;
+  int other_language = 0; /* answered in "fr", with rows */
+  int no_tree = 0;        /* asked in "de", which no entity has a tree in */
 };
 
 struct Sqlite {
@@ -152,7 +154,8 @@ void Sweep(uint32_t seed, Seen & seen) {
     EXPECT_EQ(mtotal, total) << "seed " << seed << " query " << n;
     uint64_t count = 0;
     ASSERT_EQ(GDEFSTOR_OK, gdefstor_entity_count(sq.store, kTenant, 2, type,
-        std::strlen(type), b.q.where, &count));
+        std::strlen(type), b.q.language, b.q.language_len, b.q.where,
+        &count));
     EXPECT_EQ(total, count) << "seed " << seed << " query " << n;
     seen.queries++;
     (ids.empty() ? seen.empty : seen.nonempty)++;
@@ -167,6 +170,8 @@ void Sweep(uint32_t seed, Seen & seen) {
     seen.nots += b.nots;
     seen.field_field += b.field_field;
     seen.outer += b.outer;
+    seen.other_language += !ids.empty() && b.q.language[0] == 'f';
+    seen.no_tree += b.q.language[0] == 'd';
   }
   EXPECT_EQ(0, sq.tee.disagreements) << sq.tee.first_disagreement;
   EXPECT_EQ(0, sq.tee.refusals);
@@ -190,6 +195,8 @@ TEST(Agreement, SqliteMatchesTheReferenceScanAndTheMemoryBackend) {
   EXPECT_GT(s.nots, 100);
   EXPECT_GT(s.field_field, 20);
   EXPECT_GT(s.outer, 30);
+  EXPECT_GT(s.other_language, 50);
+  EXPECT_GT(s.no_tree, 50);
 }
 
 /* The derived tables, wiped by hand and rebuilt by the port, hold what they
