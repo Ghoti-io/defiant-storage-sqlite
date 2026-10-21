@@ -221,8 +221,15 @@ struct Gen {
         continue;
       }
       std::string creator = creators[Pick(3)];
-      rc = Put(store, "shop.order", OrderId(i), OrderTree(), 0, true, nullptr,
-          creator, Pick(4));
+      /* One draw per statement: the order of a call's arguments is the
+       * compiler's to choose, and GCC's differs between targets (x86-64
+       * draws the last first; s390x, PowerPC and SPARC64 the first), which
+       * made a different population on a big-endian host. Drawn in x86-64's
+       * order, so the population the coverage floors were set on stays. */
+      int64_t created = Pick(4);
+      Node tree = OrderTree();
+      rc = Put(store, "shop.order", OrderId(i), tree, 0, true, nullptr,
+          creator, created);
       for (int k = Pick(3); rc == GDEFSTOR_OK && k > 0; k--) {
         uint64_t head = 0;
         GDEFSTOR_Entity * e = nullptr;
@@ -239,7 +246,9 @@ struct Gen {
         }
       }
       if (rc == GDEFSTOR_OK && !Chance(3)) {
-        rc = State(store, OrderId(i), Pick(2), Chance(4));
+        bool deleted = Chance(4); /* in x86-64's order, as above */
+        int published = Pick(2);
+        rc = State(store, OrderId(i), published, deleted);
       }
       if (rc == GDEFSTOR_OK) {
         rc = Translate(store, "shop.order", OrderId(i), true);
