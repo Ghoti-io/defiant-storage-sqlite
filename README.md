@@ -34,7 +34,9 @@ the purchase-order fixture, and `keystore.inc`) with every query also answered
 by the reference scan; `testAgree` is the seeded sweep against the reference
 scan and the memory backend; `testScale` asserts rows-scanned bounds and query
 plans at 10,000 entities; `testFiles` covers refused files, recorded schema
-steps, connections, a killed write, the cache and the key store's bytes.
+steps, connections, a killed write, the cache and the key store's bytes;
+`testSystem` runs two stores on one tenant file, a thread each, which never
+take one counter value or hold live leases on one stream at once.
 `testMigration` is the migration corpus gate: a committed store at SQL schema
 version 1 (`tests/corpus/schema_1.sql`) read back row for row, then changed by
 the steps a later layout takes, losing none. `check-model` plants eight defects
