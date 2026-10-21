@@ -58,7 +58,7 @@ using namespace tu;
 
 namespace {
 
-/* "t1" as the file name sqlite.h and model.h both give it. */
+/* "t1" as the file name model.h gives it. */
 const char * const kFile = "7431.db";
 const char * const kKeyFile = "7431.keys.db";
 
@@ -252,75 +252,6 @@ void ExpectEveryPathRefused(GDEFSTOR_Store * store, GDEFSTOR_Result want) {
   EXPECT_EQ(want, Declare(store, "site.article", Article()));
 }
 
-/* A file the milestone-1 API made (defiant_record, defiant_migration, no
- * dss_schema) is refused by the v2 open on every path, with a sentence that
- * names the cause, and is left exactly as it was: no table added, no WAL
- * switched on, no file beside it. The old API still reads it. */
-TEST(ModelFiles, MilestoneOneFileIsRefusedAndLeftAsItIs) {
-  Dir d;
-  ASSERT_FALSE(d.path.empty());
-  GDEFSTOR_Store * old = nullptr;
-  ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_store_create(d.path.c_str(), nullptr,
-      nullptr, &old));
-  const uint8_t blob[] = {1, 2, 3};
-  ASSERT_EQ(GDEFSTOR_OK, InWrite(old, [&](GDEFSTOR_Write * w) {
-    return gdefstor_blob_put(w, "ab", 2, blob, sizeof blob);
-  }));
-  gdefstor_store_destroy(old);
-  const std::string before = ReadAll(d.At(kFile));
-  const std::set<std::string> listed = Listing(d.path);
-  ASSERT_FALSE(before.empty());
-
-  Seen seen;
-  GDEFSTOR_Store * store = Open(d, &seen);
-  ASSERT_NE(nullptr, store);
-  ExpectEveryPathRefused(store, GDEFSTOR_ERR_FORMAT);
-  gdefstor_store_destroy(store);
-
-  EXPECT_TRUE(before == ReadAll(d.At(kFile))) << "the refused file was changed";
-  EXPECT_EQ(listed, Listing(d.path)) << "a file was made beside it";
-  ASSERT_FALSE(seen.refusals.empty());
-  for (size_t i = 0; i < seen.refusals.size(); i++) {
-    EXPECT_NE(std::string::npos, seen.refusals[i].find("milestone-1"))
-        << seen.refusals[i];
-    EXPECT_NE(std::string::npos, seen.refusals[i].find("defiant_record"))
-        << seen.refusals[i];
-    EXPECT_NE(std::string::npos, seen.refusals[i].find(d.At(kFile)))
-        << seen.refusals[i];
-    EXPECT_EQ(GDEFSTOR_ERR_FORMAT, seen.refusal_codes[i]);
-  }
-  for (const auto & r : seen.recs) {
-    EXPECT_NE(0, r.exec) << "a statement ran on a refused file: " << r.sql;
-  }
-
-  ASSERT_EQ(GDEFSSQLITE_OK, gdefssqlite_store_create(d.path.c_str(), nullptr,
-      nullptr, &old));
-  uint8_t * bytes = nullptr;
-  size_t len = 0;
-  EXPECT_EQ(GDEFSTOR_OK, gdefstor_blob_get(old, kTenant, 2, "ab", 2, &bytes,
-      &len));
-  EXPECT_EQ(sizeof blob, len);
-  gdefstor_bytes_free(nullptr, bytes);
-  gdefstor_store_destroy(old);
-}
-
-/* The same for the committed milestone-1 fixture. */
-TEST(ModelFiles, TheMilestoneOneFixtureIsRefusedAndLeftAsItIs) {
-  Dir d;
-  ASSERT_FALSE(d.path.empty());
-  std::filesystem::copy_file(
-      std::string(GDEFSSQLITE_TEST_CORPUS) + "/version_1.db", d.At(kFile));
-  const std::string before = ReadAll(d.At(kFile));
-  Seen seen;
-  GDEFSTOR_Store * store = Open(d, &seen);
-  ASSERT_NE(nullptr, store);
-  ExpectEveryPathRefused(store, GDEFSTOR_ERR_FORMAT);
-  gdefstor_store_destroy(store);
-  EXPECT_TRUE(before == ReadAll(d.At(kFile)));
-  EXPECT_EQ(std::set<std::string>({kFile}), Listing(d.path));
-  EXPECT_FALSE(seen.refusals.empty());
-}
-
 /* A store whose dss_schema says a later layout is refused as unsupported, on
  * reads as well as writes, and left as it was. */
 TEST(ModelFiles, ANewerLayoutIsRefusedAndLeftAsItIs) {
@@ -373,7 +304,7 @@ TEST(ModelFiles, AFileOfOtherTablesIsRefused) {
 /* ---- the schema in the file is the recorded steps -------------------------- */
 
 /* Every table, column and index in a tenant's file is either one of the six
- * tenant tables (and their two indexes) or a step recorded in dss_name, and
+ * unrecorded tenant tables (and their two indexes) or a step recorded in dss_name, and
  * every recorded step is in the file. DDL runs only in the writes that
  * declare a type. */
 TEST(ModelFiles, EveryTableAndIndexIsARecordedStep) {
@@ -687,9 +618,8 @@ TEST(ModelCache, RepeatedStatementsComeFromTheCache) {
 
 /* ---- the store's own surface ------------------------------------------------- */
 
-/* gdefssqlite_model_store_create() serves the entity port and holds no
- * key/bytes rows: a read finds none and a write of one is refused. One file
- * per tenant, named by the tenant's hex. */
+/* gdefssqlite_model_store_create() serves the entity port, in one file per
+ * tenant, named by the tenant's hex. */
 TEST(ModelFiles, TheStoreServesEntitiesInOneFilePerTenant) {
   Dir d;
   ASSERT_FALSE(d.path.empty());
@@ -703,14 +633,6 @@ TEST(ModelFiles, TheStoreServesEntitiesInOneFilePerTenant) {
   GDEFSTOR_Entity * e = nullptr;
   EXPECT_EQ(GDEFSTOR_ERR_INVALID, gdefstor_entity_get(store, "t2", 2, "e1", 2,
       &e));
-  uint8_t * bytes = nullptr;
-  size_t len = 0;
-  EXPECT_EQ(GDEFSTOR_ERR_INVALID, gdefstor_blob_get(store, kTenant, 2, "ab", 2,
-      &bytes, &len));
-  const uint8_t blob[] = {1};
-  EXPECT_EQ(GDEFSTOR_ERR_UNSUPPORTED, InWrite(store, [&](GDEFSTOR_Write * w) {
-    return gdefstor_blob_put(w, "ab", 2, blob, 1);
-  }));
   gdefstor_store_destroy(store);
   std::set<std::string> dbs;
   for (const std::string & f : Listing(d.path)) {

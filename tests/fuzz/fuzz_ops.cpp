@@ -20,9 +20,9 @@
 
 /**
  * @file
- *
- * Random operations against a SQLite store. The first byte is unused except
- * to keep a one-byte input from doing nothing. Files land in one temporary
+ * Random records written to and read back from a SQLite store's entity
+ * port. The first byte says whether the write commits and whether the record
+ * is read back; the rest is the record's value. Files land in one temporary
  * directory for the process.
  */
 
@@ -41,6 +41,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   static int ready = 0;
   GDEFSTOR_Store * store = NULL;
   GDEFSTOR_Write * write = NULL;
+  GDEFSSQLITE_ModelOptions opts;
   if (data == NULL || size < 2) {
     return 0;
   }
@@ -51,11 +52,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     }
     ready = 1;
   }
-  if (gdefssqlite_store_create(dir, NULL, NULL, &store) != GDEFSSQLITE_OK) {
+  gdefssqlite_model_options_default(&opts);
+  opts.synchronous = GDEFSSQLITE_SYNC_OFF;
+  if (gdefssqlite_model_store_create(dir, &opts, NULL, NULL, &store) !=
+      GDEFSSQLITE_OK) {
     return 0;
   }
   if (gdefstor_write_begin(store, "t", 1, NULL, &write) == GDEFSTOR_OK) {
-    gdefstor_blob_put(write, "k", 1, data + 1, size - 1);
+    gdefstor_record_put(write, "fuzz.ops", 8, "k", 1, data + 1, size - 1);
     if (data[0] & 1u) {
       gdefstor_write_commit(write);
     } else {
@@ -65,7 +69,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data[0] & 2u) {
     uint8_t * bytes = NULL;
     size_t len = 0;
-    if (gdefstor_blob_get(store, "t", 1, "k", 1, &bytes, &len) == GDEFSTOR_OK) {
+    int found = 0;
+    if (gdefstor_record_get(store, "t", 1, "fuzz.ops", 8, "k", 1, &found,
+            &bytes, &len) == GDEFSTOR_OK) {
       gdefstor_bytes_free(NULL, bytes);
     }
   }

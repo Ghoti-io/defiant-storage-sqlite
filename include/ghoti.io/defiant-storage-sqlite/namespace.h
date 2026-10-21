@@ -51,7 +51,6 @@
 #define gdefssqlite_model_store_create                                         \
   GHOTIIO_DEFSSQLITE(gdefssqlite_model_store_create)
 #define gdefssqlite_result_string GHOTIIO_DEFSSQLITE(gdefssqlite_result_string)
-#define gdefssqlite_store_create GHOTIIO_DEFSSQLITE(gdefssqlite_store_create)
 
 /// @endcond
 

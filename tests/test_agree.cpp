@@ -82,31 +82,6 @@ struct Sqlite {
   }
 };
 
-void Destroy(void *) {}
-
-GDEFSTOR_Result NoRow(void *, const char *, size_t, const char *, size_t,
-    uint8_t **, size_t *) {
-  return GDEFSTOR_ERR_INVALID;
-}
-
-GDEFSTOR_Result Refuse(void *, const char *, size_t, const char *, size_t,
-    const uint8_t *, size_t) {
-  return GDEFSTOR_ERR_UNSUPPORTED;
-}
-
-GDEFSTOR_Result RefuseRemove(void *, const char *, size_t, const char *,
-    size_t) {
-  return GDEFSTOR_ERR_UNSUPPORTED;
-}
-
-GDEFSTOR_Result NoRows(void *, const char *, size_t, const char *, size_t,
-    char *** keys, size_t ** lens, size_t * n) {
-  *keys = nullptr;
-  *lens = nullptr;
-  *n = 0;
-  return GDEFSTOR_OK;
-}
-
 void OpenSqlite(Sqlite & s, uint32_t seed) {
   ASSERT_FALSE(s.dir.empty());
   GDEFSTOR_ModelBackend model;
@@ -117,15 +92,8 @@ void OpenSqlite(Sqlite & s, uint32_t seed) {
                   << "reference scan disagree:\n" << what;
   };
   GDEFSTOR_ModelBackend teed = tee::TeeOf(&s.tee, model);
-  GDEFSTOR_Backend kv;
-  std::memset(&kv, 0, sizeof kv);
-  kv.destroy = Destroy;
-  kv.put = Refuse;
-  kv.get = NoRow;
-  kv.remove = RefuseRemove;
-  kv.list = NoRows;
-  ASSERT_EQ(GDEFSTOR_OK, gdefstor_store_create_model(&kv, &teed, nullptr,
-      nullptr, &s.store));
+  ASSERT_EQ(GDEFSTOR_OK, gdefstor_store_open(&teed, nullptr, nullptr,
+      &s.store));
 }
 
 void Sweep(uint32_t seed, Seen & seen) {

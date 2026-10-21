@@ -384,7 +384,6 @@ typedef struct Catalog {
   int tables;            /* not counting SQLite's own */
   int data;              /* dss_schema */
   int keys;              /* dsk_schema */
-  int milestone1;        /* defiant_record, defiant_migration or record_v0 */
   char first[64];        /* the first table that is none of these */
 } Catalog;
 
@@ -408,10 +407,6 @@ static int read_catalog(sqlite3 * db, Catalog * cat) {
       cat->data = 1;
     } else if (strcmp(name, "dsk_schema") == 0) {
       cat->keys = 1;
-    } else if (strcmp(name, "defiant_record") == 0 ||
-        strcmp(name, "defiant_migration") == 0 ||
-        strcmp(name, "record_v0") == 0) {
-      cat->milestone1 = 1;
     } else if (cat->first[0] == '\0' && strncmp(name, "dss_", 4) != 0 &&
         strncmp(name, "dsk_", 4) != 0 && name[0] != 't') {
       snprintf(cat->first, sizeof cat->first, "%s", name);
@@ -433,18 +428,12 @@ static GDEFSTOR_Result classify(Ex * ex, XConn * c, int * out_state) {
   if (src != SQLITE_OK) {
     return from_sqlite(src);
   }
-  if (!ex->keys && cat.milestone1) {
-    refuse(ex, GDEFSTOR_ERR_FORMAT, c->t->path,
-        "holds the milestone-1 layout (a defiant_record table",
-        cat.data ? " beside dss_schema)" : " and no dss_schema)");
-    return GDEFSTOR_ERR_FORMAT;
-  }
   if (!ex->keys && cat.keys) {
     refuse(ex, GDEFSTOR_ERR_FORMAT, c->t->path,
         "is a key store (it has dsk_schema), not a data store", NULL);
     return GDEFSTOR_ERR_FORMAT;
   }
-  if (ex->keys && (cat.data || cat.milestone1)) {
+  if (ex->keys && cat.data) {
     refuse(ex, GDEFSTOR_ERR_FORMAT, c->t->path,
         "is a data store, not a key store", NULL);
     return GDEFSTOR_ERR_FORMAT;
@@ -1065,42 +1054,6 @@ GDEFSSQLITE_Result gdefssqlite_model_backend(const char * directory,
   return rc;
 }
 
-/* The key/bytes half of a store opened here holds nothing. Records, blobs
- * and the outbox move into the entity transaction in a later story; until
- * then a read finds no row and a write that holds one is refused at commit,
- * never sent to a file the entity layout does not know. */
-static GDEFSTOR_Result kv_put(void * ctx, const char * t, size_t tl,
-    const char * k, size_t kl, const uint8_t * b, size_t n) {
-  (void)ctx, (void)t, (void)tl, (void)k, (void)kl, (void)b, (void)n;
-  return GDEFSTOR_ERR_UNSUPPORTED;
-}
-
-static GDEFSTOR_Result kv_get(void * ctx, const char * t, size_t tl,
-    const char * k, size_t kl, uint8_t ** out, size_t * out_len) {
-  (void)ctx, (void)t, (void)tl, (void)k, (void)kl, (void)out, (void)out_len;
-  return GDEFSTOR_ERR_INVALID; /* no such row */
-}
-
-static GDEFSTOR_Result kv_remove(void * ctx, const char * t, size_t tl,
-    const char * k, size_t kl) {
-  (void)ctx, (void)t, (void)tl, (void)k, (void)kl;
-  return GDEFSTOR_ERR_UNSUPPORTED;
-}
-
-static GDEFSTOR_Result kv_list(void * ctx, const char * t, size_t tl,
-    const char * p, size_t pl, char *** keys, size_t ** lens,
-    size_t * count) {
-  (void)ctx, (void)t, (void)tl, (void)p, (void)pl;
-  *keys = NULL;
-  *lens = NULL;
-  *count = 0;
-  return GDEFSTOR_OK; /* no rows */
-}
-
-static void kv_destroy(void * ctx) {
-  (void)ctx;
-}
-
 GDEFSSQLITE_Result gdefssqlite_model_store_create(const char * directory,
     const GDEFSSQLITE_ModelOptions * options,
     const GDEFSSQLITE_Allocator * allocator, const GDEFSTOR_Limits * limits,
@@ -1108,7 +1061,6 @@ GDEFSSQLITE_Result gdefssqlite_model_store_create(const char * directory,
   const GDEFSSQLITE_Allocator * alloc =
       allocator != NULL ? allocator : gdefssqlite_allocator_default();
   GDEFSTOR_ModelBackend model;
-  GDEFSTOR_Backend kv;
   GDEFSSQLITE_Result rc;
   GDEFSTOR_Result prc;
   if (out_store == NULL) {
@@ -1118,13 +1070,7 @@ GDEFSSQLITE_Result gdefssqlite_model_store_create(const char * directory,
   if (rc != GDEFSSQLITE_OK) {
     return rc;
   }
-  memset(&kv, 0, sizeof kv);
-  kv.destroy = kv_destroy;
-  kv.put = kv_put;
-  kv.get = kv_get;
-  kv.remove = kv_remove;
-  kv.list = kv_list;
-  prc = gdefstor_store_create_model(&kv, &model, alloc, limits, out_store);
+  prc = gdefstor_store_open(&model, alloc, limits, out_store);
   if (prc != GDEFSTOR_OK) {
     model.destroy(model.ctx);
   }

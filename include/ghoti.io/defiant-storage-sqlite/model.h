@@ -29,8 +29,8 @@
  * statement cache and the pragmas (documentation/sqlite.md).
  *
  * **Files.** A data store is a directory with one SQLite file per tenant,
- * named by the lowercase hex of the tenant bytes plus `.db`, as sqlite.h
- * places them. A key store is a directory with one file per tenant named by
+ * named by the lowercase hex of the tenant bytes plus `.db`; the tenant
+ * string is never a path. A key store is a directory with one file per tenant named by
  * the same hex plus `.keys.db`, so it never shares a file with a data store
  * even in the same directory. Every file is in WAL mode, `synchronous=FULL`;
  * a key-store file also has `secure_delete=ON`, and after each write that
@@ -38,10 +38,10 @@
  *
  * **What is refused.** Before a connection to an existing file is used for
  * anything, its catalog is read (a pragma). A file that holds tables but not
- * this layout's - the milestone-1 layout of sqlite.h (`defiant_record` and
- * no `dss_schema`), a key store opened as a data store, a data store opened
- * as a key store, anything else - is ::GDEFSTOR_ERR_FORMAT, and a layout
- * version above this build's is ::GDEFSTOR_ERR_UNSUPPORTED. Either way the
+ * this layout's - tables and no `dss_schema`, a key store opened as a data
+ * store, a data store opened as a key store - is ::GDEFSTOR_ERR_FORMAT; a
+ * layout version above this build's is ::GDEFSTOR_ERR_UNSUPPORTED, and any
+ * other version but this build's is ::GDEFSTOR_ERR_FORMAT. Either way the
  * file is left byte for byte as it was: no table is added, the journal mode
  * is not changed. The refusal is reported through
  * GDEFSSQLITE_ModelOptions::on_refusal with a sentence naming the file and
@@ -57,9 +57,6 @@
  * connection by their text, which is per tenant and query shape.
  *
  * A store or key store made here is used from one thread at a time.
- *
- * The key/bytes API of sqlite.h is unchanged and separate: its files are the
- * milestone-1 layout, which this open refuses.
  */
 
 #ifndef GHOTI_IO_GDEFSSQLITE_MODEL_H
@@ -186,11 +183,8 @@ GDEFSSQLITE_API GDEFSSQLITE_Result gdefssqlite_model_backend(
  * @brief Open a store with the entity port (model.h) over a directory of
  * tenant files.
  *
- * Only the entity port is served. The key/bytes rows of store.h,
- * projection.h, revision.h, blob.h and outbox.h have no home in these files
- * until they move into the entity transaction: a read finds none, and the
- * commit of a write that holds one is ::GDEFSTOR_ERR_UNSUPPORTED (sqlite.h
- * keeps serving them over its own files).
+ * The store is opened with gdefstor_store_open() over
+ * gdefssqlite_model_backend().
  *
  * @param limits NULL uses the port's defaults. Passed through to the port.
  * @param out_store Receives the store; close it with gdefstor_store_destroy().

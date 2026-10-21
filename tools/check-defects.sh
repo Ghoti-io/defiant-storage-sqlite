@@ -1,6 +1,8 @@
 #!/bin/sh
 #
-# Show that the planted migration defect turns Migration.OldRowSurvives red.
+# The migration corpus gate (tests/test_migration.cpp): show that a schema
+# step that loses a row turns
+# Migration.EveryStepOnTheVersionOneCorpusKeepsEveryRow red.
 #
 # Copies the tree, proves the unpatched copy passes, then plants one defect
 # by an exact textual edit and requires that test to fail by name. A patch
@@ -87,10 +89,26 @@ PY
   fi
 }
 
-plant migration src/sqlite.c testMigration \
-  'Migration.OldRowSurvives' \
-  'static int gdefssqlite_plant_drop_row = 0; /* plant:migration */' \
-  'static int gdefssqlite_plant_drop_row = 1; /* plant:migration */'
+# A step that loses a row: each ADD COLUMN the executor runs also deletes the
+# first row of the table it altered, as a step that rebuilt the table and
+# dropped one would.
+plant step-loses-a-row src/model.c testMigration \
+  'Migration.EveryStepOnTheVersionOneCorpusKeepsEveryRow' \
+  '  int rc = run_plain(c->db, sql, sql_len);
+  report(ex, c, sql, sql_len, NULL, 1, 0, 0);' \
+  '  int rc = run_plain(c->db, sql, sql_len);
+  if (rc == SQLITE_OK && sql_len > 12 && memcmp(sql, "ALTER TABLE ", 12) == 0) {
+    const char * name = sql + 12;
+    const char * end = (const char *)memchr(name, '"'"' '"'"', sql_len - 12);
+    char del[256];
+    if (end != NULL && end - name < 64) {
+      snprintf(del, sizeof del,
+          "DELETE FROM %.*s WHERE rowid = (SELECT min(rowid) FROM %.*s)",
+          (int)(end - name), name, (int)(end - name), name);
+      rc = run_plain(c->db, del, strlen(del));
+    }
+  }
+  report(ex, c, sql, sql_len, NULL, 1, 0, 0);'
 
 if [ "$fail" -ne 0 ]; then
   exit 1

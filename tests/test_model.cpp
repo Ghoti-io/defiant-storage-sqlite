@@ -110,28 +110,7 @@ extern "C" GDEFSTOR_Result ModelOpen(GDEFSTOR_Store ** out,
                   << what;
   };
   GDEFSTOR_ModelBackend teed = tee::TeeOf(o.tee, model);
-  GDEFSTOR_Backend kv;
-  /* The key/bytes half holds nothing and refuses a write, as the store that
-   * gdefssqlite_model_store_create() opens does (test_files.cpp checks
-   * that one); the suite never uses it beyond a write it aborts. */
-  std::memset(&kv, 0, sizeof kv);
-  kv.destroy = [](void *) {};
-  kv.put = [](void *, const char *, size_t, const char *, size_t,
-               const uint8_t *, size_t) { return GDEFSTOR_ERR_UNSUPPORTED; };
-  kv.get = [](void *, const char *, size_t, const char *, size_t, uint8_t **,
-               size_t *) { return GDEFSTOR_ERR_INVALID; };
-  kv.remove = [](void *, const char *, size_t, const char *, size_t) {
-    return GDEFSTOR_ERR_UNSUPPORTED;
-  };
-  kv.list = [](void *, const char *, size_t, const char *, size_t,
-                char *** keys, size_t ** lens, size_t * n) {
-    *keys = nullptr;
-    *lens = nullptr;
-    *n = 0;
-    return GDEFSTOR_OK;
-  };
-  GDEFSTOR_Result port = gdefstor_store_create_model(&kv, &teed, alloc,
-      nullptr, out);
+  GDEFSTOR_Result port = gdefstor_store_open(&teed, alloc, nullptr, out);
   if (port != GDEFSTOR_OK) {
     model.destroy(model.ctx);
     delete o.tee;

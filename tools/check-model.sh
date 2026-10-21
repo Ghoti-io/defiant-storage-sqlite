@@ -29,10 +29,10 @@ plant index-step-dropped src/model.c testScale \
                ? SQLITE_OK
                : run_plain(c->db, sql, sql_len);'
 
-# A milestone-1 file opened by the v2 open: the catalog never read, so the SQL
-# layer creates its tables in the old file.
-plant old-file-opened src/model.c testFiles \
-  'ModelFiles.MilestoneOneFileIsRefusedAndLeftAsItIs ModelFiles.TheMilestoneOneFixtureIsRefusedAndLeftAsItIs' \
+# A file of someone else's tables opened: the catalog never read, so the SQL
+# layer creates its tables in that file.
+plant other-file-opened src/model.c testFiles \
+  'ModelFiles.AFileOfOtherTablesIsRefused' \
   '  r = classify(ex, c, &state);' \
   '  r = GDEFSTOR_OK;
   state = FILE_EMPTY;'
