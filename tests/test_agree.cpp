@@ -275,7 +275,7 @@ std::string SysDo(GDEFSTOR_Store * s, const SysOp & op) {
       const std::vector<std::string> & v = o.second;
       if (o.first == 0) {
         rc = gdefstor_record_put(w, v[0].data(), v[0].size(), v[1].data(),
-            v[1].size(), reinterpret_cast<const uint8_t *>(v[2].data()),
+            v[1].size(), "test/1", 6, reinterpret_cast<const uint8_t *>(v[2].data()),
             v[2].size());
         out += "put " + rc_text(rc) + ";";
       } else if (o.first == 1) {
@@ -304,7 +304,7 @@ std::string SysDo(GDEFSTOR_Store * s, const SysOp & op) {
     size_t len = 0;
     uint64_t n = 0;
     GDEFSTOR_Result rc = gdefstor_record_get(s, kTenant, 2, op.a.data(),
-        op.a.size(), op.b.data(), op.b.size(), &found, &bytes, &len);
+        op.a.size(), op.b.data(), op.b.size(), &found, &bytes, &len, nullptr, nullptr);
     out = "get " + rc_text(rc) + " " +
           (found ? std::string(reinterpret_cast<const char *>(bytes), len)
                  : std::string("<missing>"));
@@ -322,7 +322,7 @@ std::string SysDo(GDEFSTOR_Store * s, const SysOp & op) {
       size_t kn = 0;
       const uint8_t * b = nullptr;
       size_t bn = 0;
-      gdefstor_record_list_item(l, i, &k, &kn, &b, &bn);
+      gdefstor_record_list_item(l, i, &k, &kn, &b, &bn, nullptr, nullptr);
       out += " " + std::string(k, kn) + "=" +
              std::string(reinterpret_cast<const char *>(b), bn);
     }

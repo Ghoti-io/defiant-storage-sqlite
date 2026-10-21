@@ -358,10 +358,17 @@ TEST(ModelFiles, EveryTableAndIndexIsARecordedStep) {
   std::set<std::string> recorded = {"dss_schema", "dss_counter", "dss_type",
       "dss_name", "dss_entity", "dss_draft", "dss_type_tno", "dss_entity_rid"};
   std::set<std::string> columns_recorded;
+  int stamps = 0;
   for (const auto & row : raw.Rows("SELECT tno, grp, role, name FROM dss_name")) {
     int role = std::stoi(row[2]);
     if (role == 7 || role == 8) {
       columns_recorded.insert(row[0] + "/" + row[1] + "/" + row[3]);
+      continue;
+    }
+    if (role == 17) {
+      /* The schema stamp column, a step from version 1 (story S11): of
+       * dss_record and dss_draft (tno 0), or of type N's revisions. */
+      stamps += 1;
       continue;
     }
     recorded.insert(row[3]);
@@ -370,6 +377,17 @@ TEST(ModelFiles, EveryTableAndIndexIsARecordedStep) {
     }
   }
   EXPECT_EQ(recorded, in_file);
+  int stamp_columns = 0;
+  for (const std::string & table : in_file) {
+    if (table == "dss_record" || table == "dss_draft" ||
+        (table[0] == 't' && table.size() > 2 &&
+            table.compare(table.size() - 2, 2, "_r") == 0)) {
+      stamp_columns += static_cast<int>(raw.Rows("SELECT name FROM "
+          "pragma_table_info('" + table + "') WHERE name = 'stamp'").size());
+    }
+  }
+  EXPECT_GE(stamps, 3);
+  EXPECT_EQ(stamps, stamp_columns);
   /* Each group table's and current table's columns past the fixed ones. */
   std::set<std::string> fixed = {"ent", "lang", "item", "vfrom", "vto",
       "parent", "ord"};

@@ -59,7 +59,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
   if (gdefstor_write_begin(store, "t", 1, NULL, &write) == GDEFSTOR_OK) {
-    gdefstor_record_put(write, "fuzz.ops", 8, "k", 1, data + 1, size - 1);
+    gdefstor_record_put(write, "fuzz.ops", 8, "k", 1, "test/1", 6, data + 1, size - 1);
     if (data[0] & 1u) {
       gdefstor_write_commit(write);
     } else {
@@ -71,7 +71,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     size_t len = 0;
     int found = 0;
     if (gdefstor_record_get(store, "t", 1, "fuzz.ops", 8, "k", 1, &found,
-            &bytes, &len) == GDEFSTOR_OK) {
+            &bytes, &len, nullptr, nullptr) == GDEFSTOR_OK) {
       gdefstor_bytes_free(NULL, bytes);
     }
   }

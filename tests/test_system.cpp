@@ -94,7 +94,7 @@ TEST(SystemConcurrency, TwoStoresNeverTakeOneCounterValue) {
   /* The tenant's tables first, from one store, so that neither thread's
    * first write races the other's to make them. */
   ASSERT_EQ(GDEFSTOR_OK, InWrite(stores[0], [](GDEFSTOR_Write * w) {
-    return gdefstor_record_put(w, "core.m", 6, "k", 1, nullptr, 0);
+    return gdefstor_record_put(w, "core.m", 6, "k", 1, "test/1", 6, nullptr, 0);
   }));
   std::mutex mu;
   std::vector<uint64_t> given;

@@ -355,7 +355,7 @@ TEST(Migration, ANewStoreRecordsSchemaVersionOne) {
   ASSERT_NE(nullptr, store);
   ASSERT_EQ(GDEFSTOR_OK, snapshot_fixture::InWrite(store, kTenant,
       [](GDEFSTOR_Write * w) {
-    return gdefstor_record_put(w, "core.m", 6, "k", 1, (const uint8_t *)"v", 1);
+    return gdefstor_record_put(w, "core.m", 6, "k", 1, "test/1", 6, (const uint8_t *)"v", 1);
   }));
   gdefstor_store_destroy(store);
   Db db(d.File());
@@ -419,6 +419,63 @@ TEST(Migration, EveryStepOnTheVersionOneCorpusKeepsEveryRow) {
     EXPECT_GE(now[t.first], t.second) << t.first << " lost rows";
   }
   EXPECT_GT(now.size(), before.size()) << "no step made a table";
+}
+
+/* The stamps of an entity's revisions, oldest first, one word each ("-"
+ * for none). */
+std::string Stamps(GDEFSTOR_Store * s, const char * pid) {
+  GDEFSTOR_History * h = nullptr;
+  if (gdefstor_entity_history(s, kTenant, 2, pid, std::strlen(pid), nullptr, 0,
+          &h) != GDEFSTOR_OK) {
+    return "<failed>";
+  }
+  std::string out;
+  for (size_t i = 0; i < gdefstor_history_revision_count(h); i++) {
+    GDEFSTOR_RevisionInfo r;
+    std::memset(&r, 0, sizeof r);
+    r.size = sizeof r;
+    gdefstor_history_revision(h, i, &r);
+    out += (i == 0 ? "" : " ") +
+           (r.schema_len == 0 ? std::string("-")
+                              : std::string(r.schema, r.schema_len));
+  }
+  gdefstor_history_free(h);
+  return out;
+}
+
+/* The schema stamp (story S11) is the first step from version 1: the
+ * committed store takes it on its first read, before any write, recorded in
+ * dss_name; the rows it held read with no stamp, and a row written after it
+ * carries its own. */
+TEST(Migration, TheVersionOneCorpusTakesTheStampStepOnItsFirstRead) {
+  Dir d;
+  ASSERT_FALSE(d.path.empty());
+  LoadCorpus(d);
+  {
+    Db db(d.File());
+    EXPECT_TRUE(db.Column("SELECT name FROM pragma_table_info('t1_r') WHERE "
+                          "name = 'stamp'").empty());
+  }
+  GDEFSTOR_Store * store = Open(d.path);
+  ASSERT_NE(nullptr, store);
+  EXPECT_EQ("- - - -", Stamps(store, "o1"));
+  {
+    Db db(d.File());
+    for (const char * t : {"dss_record", "dss_draft", "t1_r", "t2_r"}) {
+      EXPECT_EQ(std::vector<std::string>({"stamp"}),
+          db.Column(std::string("SELECT name FROM pragma_table_info('") + t +
+                    "') WHERE name = 'stamp'")) << t;
+    }
+    EXPECT_EQ(std::vector<std::string>({"0 0", "0 1", "1 0", "2 0"}),
+        db.Column("SELECT tno || ' ' || col FROM dss_name WHERE role = 17 "
+                  "ORDER BY tno, col"));
+    EXPECT_EQ(std::vector<std::string>({"1"}),
+        db.Column("SELECT version FROM dss_schema"));
+  }
+  ASSERT_EQ(GDEFSTOR_OK, TakeSteps(store));
+  EXPECT_EQ("test/1", Stamps(store, "n1"));
+  EXPECT_EQ("- - - -", Stamps(store, "o1"));
+  gdefstor_store_destroy(store);
 }
 
 /* The corpus, written once by this layout. */
