@@ -867,12 +867,21 @@ check-aliasing: ## Fail if the strict-aliasing warning is not actually armed
 		printf '\033[0;31mcheck-aliasing: CFLAGS resolves to -Wstrict-aliasing=%s, and only level 1 reports the planted store - 0, 2 and 3 are all silent on it. The level is wrong; the flags are not missing. Note that 3 is also what -Wall implies, so it means either an explicit override later on the command line or ALIASING flags that stopped being passed, and this cannot tell which.\033[0m\n' "$$level" >&2; \
 	fi; \
 	exit 1
+# The paths this Makefile bakes into objects, handed to the copy a plant builds
+# in, so the copy compiles with the same flags as this tree and keeps its
+# objects (plant-lib.sh). Left to default they would name the copy's own
+# directory, the flags stamp would differ, and every plant would recompile the
+# library. The helpers are defiant-storage's, installed with its conformance
+# suites.
+PLANT_PATHS = TEST_DATA=$(TEST_DATA) TEST_CORPUS=$(TEST_CORPUS)
+PLANT_LIB = $(STOR_CONFORMANCE)/plant-lib.sh
+
 check-defects: ## Fail unless each planted defect turns the conformance gate red
-	@tools/check-defects.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-defects.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 
 
 check-model: ## Fail unless each defect planted in the entity port's executor turns a named test red
-	@tools/check-model.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX))
+	@GHOTI_PLANT_LIB=$(PLANT_LIB) tools/check-model.sh "$(MAKE)" "$(BUILD_DIR)" $(if $(PREFIX),PREFIX=$(PREFIX)) $(PLANT_PATHS)
 
 check-symbols: ## Fail if any exported symbol lacks the version namespace
 check-symbols: $(APP_DIR)/$(TARGET)
@@ -944,6 +953,11 @@ ifeq ($(OS_NAME), Linux)
 else
 	@printf "check-symbols: skipped (Linux only)\n"
 endif
+
+# A gate copies the finished build into its scratch tree (plant-lib.sh), so
+# under make -j no gate may start before the library and every test
+# executable are linked.
+$(TEST_GATES): | $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 
 test: ## Make and run the unit tests
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -1467,12 +1481,12 @@ clean: ## Remove all contents of the build directories.
 
 $(FLAGS_STAMP): force-flags
 	@mkdir -p $(@D)
-	@printf '%s\n' '$(CC) $(CXX) $(LIB_CFLAGS) $(CFLAGS) $(CXXFLAGS) $(LDFLAGS) $(INCLUDE) $(TEST_DATA) $(MEMLIBRARY) $(CUTIL_LIBS) $(TESTFLAGS) $(TEST_COMPILE_FLAGS) $(TEST_LDFLAGS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)' > $@.new
+	@printf '%s\n' '$(CC) $(CXX) $(LIB_CFLAGS) $(CFLAGS) $(CXXFLAGS) $(LDFLAGS) $(INCLUDE) $(TEST_DATA) $(TEST_CORPUS) $(MEMLIBRARY) $(CUTIL_LIBS) $(TESTFLAGS) $(TEST_COMPILE_FLAGS) $(TEST_LDFLAGS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)' > $@.new
 	@cmp -s $@.new $@ 2>/dev/null && rm -f $@.new || mv -f $@.new $@
 
 $(ASAN_FLAGS_STAMP): force-flags
 	@mkdir -p $(@D)
-	@printf '%s\n' '$(CC) $(CXX) $(ASAN_CFLAGS) $(ASAN_CXXFLAGS) $(ASAN_LDFLAGS) $(INCLUDE) $(TEST_DATA) $(ASAN_MEMLIBRARY) $(CUTIL_LIBS) $(TESTFLAGS) $(TEST_COMPILE_FLAGS)' > $@.new
+	@printf '%s\n' '$(CC) $(CXX) $(ASAN_CFLAGS) $(ASAN_CXXFLAGS) $(ASAN_LDFLAGS) $(INCLUDE) $(TEST_DATA) $(TEST_CORPUS) $(ASAN_MEMLIBRARY) $(CUTIL_LIBS) $(TESTFLAGS) $(TEST_COMPILE_FLAGS)' > $@.new
 	@cmp -s $@.new $@ 2>/dev/null && rm -f $@.new || mv -f $@.new $@
 
 $(FUZZ_FLAGS_STAMP): force-flags
