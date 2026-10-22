@@ -35,6 +35,7 @@
 #include <sqlite3.h>
 
 #include "model_util.h"
+#include "size_structs.h"
 #include "tmpdir.h"
 
 #include <atomic>
@@ -98,6 +99,7 @@ struct Seen {
     int cached = 0;
     std::string phase;
   };
+  size_t stats_size = 0; /* the size of the statistics the last one came in */
   std::vector<Rec> recs;
   std::string phase = "setup";
   std::vector<std::string> refusals;
@@ -107,6 +109,7 @@ struct Seen {
 void OnStatement(void * ctx, const GDEFSSQLITE_StatementStats * s) {
   Seen * seen = static_cast<Seen *>(ctx);
   Seen::Rec r;
+  seen->stats_size = s->size;
   r.sql.assign(s->sql, s->sql_len);
   r.conn = s->connection;
   r.write = s->write;
@@ -902,6 +905,36 @@ TEST(ModelKeyStore, KeyFilesAndDataFilesAreNotConfused) {
   EXPECT_NE(std::string::npos, data_seen.refusals[0].find("is a key store"));
   EXPECT_TRUE(data_before == ReadAll(swapped.At(kKeyFile)));
   EXPECT_TRUE(keys_before == ReadAll(swapped.At(kFile)));
+}
+
+/* AD-34: a struct with a size member is accepted at exactly its own size. The
+ * two here are the options a store is opened with and the statistics it tells
+ * the observer of each statement (size_structs.h lists every struct). */
+TEST(ModelFiles, TheStructsHereAreAcceptedAtOnlyTheirOwnSize) {
+  const std::map<std::string, size_structs::Probe> probes = {
+      {"GDEFSSQLITE_ModelOptions", [&](size_t size) {
+         Dir d;
+         Seen seen;
+         GDEFSSQLITE_ModelOptions o = Options(&seen);
+         o.size = size;
+         GDEFSTOR_Store * store = nullptr;
+         int rc = gdefssqlite_model_store_create(d.path.c_str(), &o, nullptr,
+             nullptr, &store);
+         gdefstor_store_destroy(store);
+         return rc == GDEFSSQLITE_OK;
+       }},
+      /* The library fills it: whether it filled the size asked about. */
+      {"GDEFSSQLITE_StatementStats", [&](size_t size) {
+         Dir d;
+         Seen seen;
+         GDEFSTOR_Store * store = Open(d, &seen);
+         EXPECT_EQ(GDEFSTOR_OK, Declare(store, "site.article", Article()));
+         gdefstor_store_destroy(store);
+         EXPECT_FALSE(seen.recs.empty());
+         return !seen.recs.empty() && seen.stats_size == size;
+       }},
+  };
+  size_structs::Run(size_structs::Sqlite(), "tests/test_files.cpp", probes);
 }
 
 }  // namespace

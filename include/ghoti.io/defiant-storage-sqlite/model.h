@@ -124,7 +124,8 @@ typedef enum GDEFSSQLITE_Sync {
   GDEFSSQLITE_SYNC_OFF = 1,  ///< `synchronous=OFF`, for tests.
 } GDEFSSQLITE_Sync;
 
-/** How a store or key store is opened. Size-prefixed. */
+/** How a store or key store is opened. Its @ref size must be
+ * `sizeof(GDEFSSQLITE_ModelOptions)`; any other is ::GDEFSSQLITE_ERR_INVALID. */
 typedef struct GDEFSSQLITE_ModelOptions {
   size_t size;                ///< `sizeof(GDEFSSQLITE_ModelOptions)`.
   /** How long a begin waits for another process's write, in milliseconds.

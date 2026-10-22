@@ -446,7 +446,7 @@ TEST_COMPILE_FLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cf
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
-TEST_GATES ?= check-symbols check-aliasing check-defects check-model
+TEST_GATES ?= check-symbols check-aliasing check-defects check-model check-sizes
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 # --suppressions: see tests/valgrind.supp. It holds allocations that are
@@ -676,7 +676,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(STATIC_TARGET) 
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-defects check-model
+.PHONY: clean cloc docs docs-pdf examples coverage check-symbols check-aliasing check-defects check-model check-sizes
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-valgrind test-valgrind-quiet test-watch uninstall watch
 # Debug build commands
@@ -742,6 +742,13 @@ TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE):$(DEP_LD_PATH)
 ####################################################################
 # Symbol namespace check
 ####################################################################
+
+# Every struct that begins with a size member is in tests/size_structs.h and
+# run by its home test; nothing in src/ reads one by a prefix of its size. The
+# script is defiant-storage's, installed with its conformance suites, and
+# plants each defect it looks for.
+check-sizes: ## Every size-member struct is listed and probed, no size prefix is read in src; real-source plants
+	@$(STOR_CONFORMANCE)/check-size-structs.sh . tests/size_structs.h
 
 check-aliasing: ## Fail if the strict-aliasing warning is not actually armed
 # CFLAGS names -fstrict-aliasing and -Wstrict-aliasing=1, and neither spelling
