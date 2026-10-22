@@ -39,6 +39,7 @@
 
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -48,8 +49,15 @@ struct Opened {
   tee::Tee * tee = nullptr;
 };
 
+/* The allocation-failure sweeps open and close stores from several threads at
+ * once (model.inc), so the table of open stores is locked. */
 std::map<GDEFSTOR_Store *, Opened> & Stores() {
   static std::map<GDEFSTOR_Store *, Opened> m;
+  return m;
+}
+
+std::mutex & StoresLock() {
+  static std::mutex m;
   return m;
 }
 
@@ -118,22 +126,33 @@ extern "C" GDEFSTOR_Result ModelOpen(GDEFSTOR_Store ** out,
     std::filesystem::remove_all(o.dir, ec);
     return port;
   }
-  Stores()[*out] = o;
+  {
+    std::lock_guard<std::mutex> hold(StoresLock());
+    Stores()[*out] = o;
+  }
   return GDEFSTOR_OK;
 }
 
 extern "C" void ModelClose(GDEFSTOR_Store * store) {
-  auto it = Stores().find(store);
+  Opened o;
+  bool known = false;
+  {
+    std::lock_guard<std::mutex> hold(StoresLock());
+    auto it = Stores().find(store);
+    if (it != Stores().end()) {
+      o = it->second;
+      known = true;
+      Stores().erase(it);
+    }
+  }
   gdefstor_store_destroy(store);
-  if (it == Stores().end()) {
+  if (!known) {
     return;
   }
-  EXPECT_EQ(0, it->second.tee->disagreements)
-      << it->second.tee->first_disagreement;
-  delete it->second.tee;
+  EXPECT_EQ(0, o.tee->disagreements) << o.tee->first_disagreement;
+  delete o.tee;
   std::error_code ec;
-  std::filesystem::remove_all(it->second.dir, ec);
-  Stores().erase(it);
+  std::filesystem::remove_all(o.dir, ec);
 }
 
 GDEFSTOR_Result KeyStoreOpen(const GDEFSTOR_KeyCipher * cipher,
